@@ -1,4 +1,4 @@
-/**
+/** LAST-452-T648
  * @file    DroneDriver.ino
  * @author  Luka Jacobsen
  * @brief   Quadcopter drone control system.
@@ -9,18 +9,25 @@
  * * HARDWARECONNECTIONS:
  */
 
-// Include libraries
-#include <RH_ASK.h>
-#include <SPI.h>
+// ========================================================================== //
+// INCLUDE LIBRARIES                                                          //
+// ========================================================================== //
 
-// Create radio driver
-RH_ASK rf_driver;
+// RadioHead Amplitude Shifting Keying, 433MHz frequenzy
+#include <RH_ASK.h>
+
+// Serial Peripheral Interface library
+#include <SPI.h>
 
 // ========================================================================== //
 // CONFIGURATION                                                              //
 // ========================================================================== //
 
+// Verbose messages, used when debugging. Ensure evaulation at compile-time.
+constexpr bool VERBOSE = false;
 
+// Length of a drone arm, from the middle to the motor center.
+const uint8_t ARM_LENGTH_CM = 10;
 
 // ========================================================================== //
 // PIN DEFINITIONS                                                            //
@@ -33,7 +40,8 @@ RH_ASK rf_driver;
 // ========================================================================== //
 
 /**
- * @brief Packet containing flight control information, ability to decode.
+ * @brief Packet containing flight control information, ability to encode and
+ * decode values.
  * 
  * Packet storing pitch, roll, throttle, yaw, autoland and a rolling counter
  * sequence. The information values (except autoland) are stored in 5 bits,
@@ -133,11 +141,92 @@ struct RemotePacket {
 // RUNTIME GLOBAL VARIABLES                                                   //
 // ========================================================================== //
 
-
-
 // ========================================================================== //
 // CLASSES                                                                    //
 // ========================================================================== //
+
+/**
+ * @brief Send and recieve packets of 5 bytes. Used to communicate between
+ * remote and drone controller.
+ * 
+ * Expects constant sending from the transmitter copy of this class.
+ * 
+ * Drone should NOT send data! (slows down runtime too much).
+ */
+class Radio {
+  public:
+    Radio() {}
+
+    /**
+     * @brief Initialize the RadioHead driver.
+     */
+    void begin() {
+      driver.init();
+    }
+
+    /**
+     * @brief Call every loop. Reads from the driver internal buffer if new data
+     * is available.
+     * 
+     * When recieving a packet, the function checks if the length recieved is
+     * exactly 5 bytes. This is to filter off noise or broken packets.
+     */
+    void update() {
+      uint8_t length = sizeof(buffer);
+
+      // Read if theres a packet ready
+      if (driver.recv(buffer, &length) && length == 5) {
+        if (rxPacket.decode(buffer)) {
+          signal = true;
+          lastRxTime = millis();
+        }
+      }
+
+      // Check if the radio lost signal to the transmitter
+      if (millis() - lastRxTime > 100) {
+        signal = false;
+      }
+    }
+
+    /**
+     * @brief Send a packets data by reference. Blocking stack until finished!
+     * 
+     * RadioHead can send 2000bps. This class sends 5 bytes + overhead which is
+     * approximatly ~80 bits. That makes sending take around ~40ms.
+     * 
+     * @param packet RemotePacket&. Reference to the remote packet whos data to
+     * encode and send.
+     */
+    void send(const RemotePacket& packet) {
+      packet.encode(buffer);
+      driver.send(buffer, sizeof(buffer));
+      driver.waitPacketSent();
+    }
+
+    /**
+     * @brief Check if the RH has a signal.
+     * 
+     * Loses signal if theres more than 100ms since the last recorded packet
+     * recieved.
+     * 
+     * @return bool. True if theres a signal.
+     */
+    bool hasSignal() const { return signal; }
+
+    /**
+     * @brief Exposes the packet, read-only access.
+     */
+    const RemotePacket& getRxPacket() const { return rxPacket; }
+  
+  private:
+    RH_ASK driver;
+
+    RemotePacket rxPacket;
+    uint8_t buffer[5];
+
+    bool signal;
+    uint32_t lastRxTime;
+}
 
 /**
  * @brief Non-blocking time scheduler.
@@ -180,6 +269,8 @@ class IntervalMicros {
 
     /**
      * @brief Sets interval for class.
+     * 
+     * @param newInterval uint32_t. The new interval to run at.
      */
     void setInterval(uint32_t newInterval) {
       interval = newInterval;
@@ -385,20 +476,23 @@ class PID {
 };
 
 // ========================================================================== //
+// CLASS INSTANTIATION                                                        //
+// ========================================================================== //
+
+
+
+// ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
 // ========================================================================== //
 
-// Need 3, roll, pitch, yaw (RC values go before PID update)
-PID rateRollPID(0.12f, 0.02f, 0.001f, // Values are fucking random, not tuned
-                    400.0f,     // output limit
-                    100.0f,     // integral limit
-                    2000);      // 2000 µs = 500 Hz
-
+/**
+ * @brief Called by system at the startup once.
+ */
 void setup() {
-  Serial.begin(9600);
+  if (VERBOSE) Serial.begin(9600);
 
-  // Test shit before i have props and BLDCs
-  // Note dont use the Arduino with the plastic shield, its retarded and broken.
+  /* ===== TESTING ===== */
+  // Test with LEDs (i don't have props and BLDCs)
   pinMode(5, OUTPUT); // Forward
   pinMode(9, OUTPUT); // Right
   pinMode(3, OUTPUT); // Left
@@ -408,17 +502,18 @@ void setup() {
   digitalWrite(9, HIGH);
   digitalWrite(3, HIGH);
   digitalWrite(6, HIGH);
+  /* ===== TESTING ===== */
 }
 
+/**
+ * @brief Called by system every time possible.
+ */
 void loop() {
-  /*
-  usensor.update();
-
-  static IntervalMicros printTimer(100000); // 500ms
-  if (printTimer.ready()) {
-      Serial.println(usensor.getDistance());
-  }
-  */
+  // Read sensors
+  // Read radio
+  // Run PIDs
+  // Mix outputs -> 4 motors
+  // Write PWM
 }
 
 // ========================================================================== //
@@ -431,3 +526,34 @@ void loop() {
 // HELPER FUNCTIONS                                                           //
 // ========================================================================== //
 
+
+
+// ========================================================================== //
+// NOTES                                                                      //
+// ========================================================================== //
+/*
+
+Might not use, PID might be able to absorbe it
+Torque = MotorThrust * ArmLength
+
+M1 = throttle + pitch + roll - yaw
+M2 = throttle + pitch - roll + yaw
+M3 = throttle - pitch - roll - yaw
+M4 = throttle - pitch + roll + yaw
+
+Approx drone weight: 1020g (255g/motor)
+- Frame       ~ 200g
+- 4 Motors    ~ 250g
+- 4 ESCs      ~ 120g
+- Battery     ~ 300g
+- Electronics ~ 100g
+- Props/Wires ~ 50g
+
+Aim for: 255 * 2 = 510g thrust/motor (2040g total)
+
+Best props are ~25cm span, bigger = better & ^efficient
+Arms should then be around 45cm (pulled out of my ass, should be enough)
+
+Battery size: ~8000mAh (~15 minute flight)
+
+*/
