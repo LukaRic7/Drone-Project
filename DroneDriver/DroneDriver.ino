@@ -29,6 +29,21 @@
 // Verbose messages, used when debugging. Ensure evaulation at compile-time.
 constexpr bool VERBOSE = false;
 
+// Pich PID tuning values
+constexpr float pitchP = 3.0f;
+constexpr float pitchI = 0.5f;
+constexpr float pitchD = 0.8f;
+
+// Roll PID tuning values
+constexpr float rollP = 3.0f;
+constexpr float rollI = 0.5f;
+constexpr float rollD = 0.8f;
+
+// Yaw PID tuning values
+constexpr float yawP = 1.2f;
+constexpr float yawI = 0.1f;
+constexpr float yawD = 0.0f;
+
 // ========================================================================== //
 // PIN DEFINITIONS                                                            //
 // ========================================================================== //
@@ -629,6 +644,66 @@ class PID {
     IntervalMicros timer;
 };
 
+/**
+ * @brief Mixes throttle, roll, pitch & yaw and outputs values to the ESCs.
+ * 
+ * Expects that the ESCs range is 0-180.
+ * 
+ * Uses the following mixing (t = throttle, p = pitch, r = roll, y = yaw):
+ * m1 = t + p + r - y
+ * m2 = t + p - r + y
+ * m3 = t - p - r - y
+ * m4 = t - p + r + y
+ * 
+ * @param m1 uint8_t. Front-left motor pin.
+ * @param m2 uint8_t. Front-right motor pin.
+ * @param m3 uint8_t. Back-right motor pin.
+ * @param m4 uint8_t. Back-left motor pin.
+ */
+class MotorMix {
+  public:
+    MotorMix(uint8_t m1, uint8_t m2, uint8_t m3, uint8_t m4)
+      : pins{m1, m2, m3, m4}
+    {}
+
+    /**
+     * @brief Set the motor pin modes.
+     */
+    void begin() {
+      // Iterate pins and set them to output
+      for (int i=0; i<4; ++i)
+        pinMode(pins[i], OUTPUT);
+    }
+    
+    /**
+     * @brief Call to update the ESC values. Mixes inputs to run the quadcopter
+     * motors the correct way.
+     * 
+     * @param throttle float. The throttle input.
+     * @param roll float. The roll input.
+     * @param pitch float. The pitch input.
+     * @param yaw float. The yaw input.
+     */
+    void update(float throttle, float roll, float pitch, float yaw) {
+      float m[4];
+
+      // Mix values for each motor
+      m[0] = throttle + pitch + roll - yaw; // Front-left
+      m[1] = throttle + pitch - roll + yaw; // Front-right
+      m[2] = throttle - pitch - roll - yaw; // Back-right
+      m[3] = throttle - pitch + roll + yaw; // Back-left
+
+      // Write to motor ESCs
+      for (int i=0; i<4; ++i) {
+        m[i] = constrain(m[i], 0, 180);
+        analogWrite(pins[i], (int)m[i]);
+      }
+    }
+
+  private:
+    uint8_t pins[4];
+}
+
 // ========================================================================== //
 // CLASS INSTANTIATION                                                        //
 // ========================================================================== //
@@ -713,15 +788,6 @@ void loop() {
 // NOTES                                                                      //
 // ========================================================================== //
 /*
-
-Might not use, PID might be able to absorbe it
-Torque = MotorThrust * ArmLength
-
-M1 = throttle + pitch + roll - yaw
-M2 = throttle + pitch - roll + yaw
-M3 = throttle - pitch - roll - yaw
-M4 = throttle - pitch + roll + yaw
-
 Approx drone weight: 1020g (255g/motor)
 - Frame       ~ 200g
 - 4 Motors    ~ 250g
