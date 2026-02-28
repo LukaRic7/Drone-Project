@@ -19,6 +19,9 @@
 // Serial Peripheral Interface library
 #include <SPI.h>
 
+// Inter-Intergrated Circuit library (two-wire serial protocol)
+#include <Wire.h>
+
 // ========================================================================== //
 // CONFIGURATION                                                              //
 // ========================================================================== //
@@ -146,6 +149,155 @@ struct RemotePacket {
 // ========================================================================== //
 
 /**
+ * @brief IMU Driver, calculate pitch, roll and yaw from the MPU-6050.
+ * 
+ * When calculating the pitch and roll, its somewhat accurate because both
+ * values can be corrected by the accelerometer. But when calculating the yaw,
+ * it will drift slightly, asuming around 5°/min, there is no correction for
+ * this in the class.
+ * 
+ * @param address uint8_t. The MPU-6050 address, defualt is 0x68
+ * @param intervalMicros uint32_t. The interval between hardware reads.
+ */
+class InertialUnit {
+  public:
+    InertialUnit(uint8_t address=0x68, uint32_t intervalMicros)
+      : mpu_address(address), timer(IntervalMicros), roll(0), pitch(0), yaw(0),
+        dt(IntervalMicros * 1e-6f)
+    {}
+
+    /**
+     * @brief Initialize the wire, and wake up the MPU-6050.
+     * 
+     * When waking up the MPU, the wire starts a transmission to the address.
+     * It then writes a 0 value first to the power management register address
+     * to tell the chip to wake up. Then it ends the transmission, and
+     * releasing the bus.
+     */
+    void begin() {
+      Wire.begin();
+
+      // Wake MPU-6050
+      Wire.beginTransmission(mpu_address);
+      Wire.write(0x6B); // Power management address
+      Wire.write(0x00); // Write 0 to sleep
+      Wire.endTransmission(true); // Release the bus
+    }
+
+    /**
+     * @brief Call every loop. Reads hardware values when time scheduler is
+     * ready.
+     * 
+     * When reading hardware values it starts at the start register which is the
+     * accelerometer X. It then ends the transmission before reads, but doesn't
+     * release the bus. Right after, the function performs a request of
+     * 14 bytes. This is the exact length of [accel + temp + gyro].
+     * 
+     * There are 3 constants are defined in the update loop, find them listed
+     * below along with an explaination on how they were found and their role:
+     * 1. `half16bits`, this is just the half of 16 bits. This is used when
+     * calculating acceleration angles. Becuase the hardware measures +-2g,
+     * dividing by this number ensures correct angles.
+     * 2. `degPerSec`, this is used to calculate the degrees per second when
+     * converting the gyroscopics. The number comes from the datasheet and is
+     * specified as the LSB (Least Significant Bit), where 1°/s = 131 LSB.
+     * 3. `alphaFilter`, this is a bias filter, used when calculating roll and
+     * pitch to get the best of both worlds and a result thats stable enough
+     * throughout multiple minutes.
+     * 
+     * It then reads all the raw values. It uses the constant defined variables
+     * to integrate the raw values into roll, pitch and yaw. After that it
+     * defines the acceleration angles (also using the constants), then it
+     * calculates the accelleration of roll and pitch (not yaw since it's not
+     * possible with the current hardware).
+     * 
+     * From there it uses a bias where it blends gyro and acceleration to get
+     * the best of both worlds. For stabilization gyro is good at short-term
+     * motion and bad at long-term motion. But accelerometer is good at
+     * long-term gravity angle and bad at suppressing noise & vibrations.
+     */
+    void update() {
+      if (!timer.ready()) return;
+      
+      // Define constant units
+      constexpr float half16bits  = 16384.0f;
+      constexpr float degPerSec   = 131.07f;
+      constexpr float alphaFilter = 0.98f;
+
+      // Burst read 14 bytes
+      Wire.beginTransmission(mpu_address);
+      Wire.write(0x3B); // Start register for accelerometer data
+      Wire.endTransmission(false); // Dont release the bus
+      Wire.requestFrom(mpu_address, (uint8_t)14);
+
+      // Read values
+      int16_t ax = read16();
+      int16_t ay = read16();
+      int16_t az = read16();
+      read16();
+      int16_t gx = read16();
+      int16_t gy = read16();
+      int16_t gz = read16();
+
+      // Convert gyroscopics
+      float gxf = gx / degPerSec;
+      float gyf = gy / degPerSec;
+      float gzf = gz / degPerSec;
+
+      // Integrate gyroscopics
+      roll  += gxf * dt;
+      pitch += gyf * dt;
+      yaw   += gzf * dt;
+
+      // Acceleration angles
+      float axf = ax / half16bits;
+      float ayf = ay / half16bits;
+      float azf = az / half16bits;
+
+      // Calculate accelleration
+      float rollAcc  = atan2(ayf, azf) * RAD_TO_DEG;
+      float pitchAcc = atan2(-axf, sqrt(ayf*ayf + azf*azf)) * RAD_TO_DEG;
+
+      // Calculate the pitch and roll angle
+      roll  = alphaFilter * roll  + (1 - alphaFilter) * rollAcc;
+      pitch = alphaFilter * pitch + (1 - alphaFilter) * pitchAcc;
+    }
+
+    /**
+     * @brief Get the roll value in degrees.
+     */
+    float getRoll() const { return roll; };
+    
+    /**
+     * @brief Get the pitch value in degrees.
+     */
+    float getPitch() const { return pitch; };
+    
+    /**
+     * @brief Get the yaw value in degrees.
+     * 
+     * World physics causes it to drift over short time, don't use for
+     * important things, unreliable!
+     */
+    float getYaw() const { return yaw; };
+
+  private:
+    uint8_t mpu_address;
+    IntervalMicros timer;
+
+    float roll, pitch, yaw;
+
+    /**
+     * @brief Internal function for reading 16 bits from wire.
+     * 
+     * @return int16_t. 2 Byte result from the read.
+     */
+    inline int16_t read16() {
+      return (Wire.read() << 8) | Wire.read();
+    }
+};
+
+/**
  * @brief Send and recieve packets of 5 bytes. Used to communicate between
  * remote and drone controller.
  * 
@@ -226,7 +378,7 @@ class Radio {
 
     bool signal;
     uint32_t lastRxTime;
-}
+};
 
 /**
  * @brief Non-blocking time scheduler.
@@ -275,6 +427,11 @@ class IntervalMicros {
     void setInterval(uint32_t newInterval) {
       interval = newInterval;
     }
+
+    /**
+     * @brief Get the currently used interval.
+     */
+    bool getInterval() const { return interval; }
 
   private:
     uint32_t interval;
