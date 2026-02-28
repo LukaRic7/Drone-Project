@@ -1,19 +1,22 @@
-/**
+/** LAST-196-T648
  * @file    DroneRemote.ino
  * @author  Luka Jacobsen
- * @brief   Remote control for the drone driver.
+ * @brief   Remote control for the drone.
  * @date    2026-02-26
  * * @details This file handles sending signals to the drone, telling it where
  * to relocate to.
  * * HARDWARECONNECTIONS:
  */
 
-// Include libraries
-#include <RH_ASK.h>
-#include <SPI.h>
+// ========================================================================== //
+// INCLUDE LIBRARIES                                                          //
+// ========================================================================== //
 
-// Create radio driver
-RH_ASK rf_driver;
+// RadioHead Amplitude Shifting Keying, 433MHz frequenzy
+#include <RH_ASK.h>
+
+// Serial Peripheral Interface library
+#include <SPI.h>
 
 // ========================================================================== //
 // CONFIGURATION                                                              //
