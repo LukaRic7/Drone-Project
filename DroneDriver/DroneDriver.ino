@@ -150,7 +150,7 @@ struct RemotePacket {
     
     return true;
   }
-}
+};
 
 // ========================================================================== //
 // RUNTIME GLOBAL VARIABLES                                                   //
@@ -159,6 +159,64 @@ struct RemotePacket {
 // ========================================================================== //
 // CLASSES                                                                    //
 // ========================================================================== //
+
+/**
+ * @brief Non-blocking time scheduler.
+ * 
+ * Alternative design for a non-blocking version of the delay() functions.
+ * 
+ * @param intervalMicros uint32_t. Interval between each call.
+ */
+class IntervalMicros {
+  public:
+    IntervalMicros(uint32_t intervalMicros)
+      : interval(intervalMicros), last(0)
+    {}
+
+    /**
+     * @brief Non-blocking scheduler. Checks if enough time has elapsed to
+     * pass the interval.
+     * 
+     * @return bool. True if enough time elapsed.
+     * @return bool. False otherwise.
+     */
+    bool ready() {
+      // Return true if interval has elapsed
+      uint32_t now = micros();
+      if ((uint32_t)(now - last) >= interval) {
+        last = now;
+        return true;
+      }
+
+      // Interval has not elapsed
+      return false;
+    }
+
+    /**
+     * @brief Reset last timestamp to current time.
+     */
+    void reset() {
+      last = micros();
+    }
+
+    /**
+     * @brief Sets interval for class.
+     * 
+     * @param newInterval uint32_t. The new interval to run at.
+     */
+    void setInterval(uint32_t newInterval) {
+      interval = newInterval;
+    }
+
+    /**
+     * @brief Get the currently used interval.
+     */
+    bool getInterval() const { return interval; }
+
+  private:
+    uint32_t interval;
+    uint32_t last;
+};
 
 /**
  * @brief IMU Driver, calculate pitch, roll and yaw from the MPU-6050.
@@ -174,8 +232,8 @@ struct RemotePacket {
 class InertialUnit {
   public:
     InertialUnit(uint32_t intervalMicros, uint8_t address=0x68)
-      : mpu_address(address), timer(IntervalMicros), roll(0), pitch(0), yaw(0),
-        dt(IntervalMicros * 1e-6f)
+      : mpu_address(address), timer(intervalMicros), roll(0), pitch(0), yaw(0),
+        dt(intervalMicros * 1e-6f)
     {}
 
     /**
@@ -299,6 +357,8 @@ class InertialUnit {
 
     float roll, pitch, yaw;
 
+    float dt;
+
     /**
      * @brief Internal function for reading 16 bits from wire.
      * 
@@ -390,64 +450,6 @@ class Radio {
 
     bool signal;
     uint32_t lastRxTime;
-};
-
-/**
- * @brief Non-blocking time scheduler.
- * 
- * Alternative design for a non-blocking version of the delay() functions.
- * 
- * @param intervalMicros uint32_t. Interval between each call.
- */
-class IntervalMicros {
-  public:
-    IntervalMicros(uint32_t intervalMicros)
-      : interval(intervalMicros), last(0)
-    {}
-
-    /**
-     * @brief Non-blocking scheduler. Checks if enough time has elapsed to
-     * pass the interval.
-     * 
-     * @return bool. True if enough time elapsed.
-     * @return bool. False otherwise.
-     */
-    bool ready() {
-      // Return true if interval has elapsed
-      uint32_t now = micros();
-      if ((uint32_t)(now - last) >= interval) {
-        last = now;
-        return true;
-      }
-
-      // Interval has not elapsed
-      return false;
-    }
-
-    /**
-     * @brief Reset last timestamp to current time.
-     */
-    void reset() {
-      last = micros();
-    }
-
-    /**
-     * @brief Sets interval for class.
-     * 
-     * @param newInterval uint32_t. The new interval to run at.
-     */
-    void setInterval(uint32_t newInterval) {
-      interval = newInterval;
-    }
-
-    /**
-     * @brief Get the currently used interval.
-     */
-    bool getInterval() const { return interval; }
-
-  private:
-    uint32_t interval;
-    uint32_t last;
 };
 
 /**
