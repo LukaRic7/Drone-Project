@@ -29,9 +29,6 @@
 // Verbose messages, used when debugging. Ensure evaulation at compile-time.
 constexpr bool VERBOSE = false;
 
-// Length of a drone arm, from the middle to the motor center.
-const uint8_t ARM_LENGTH_CM = 10;
-
 // ========================================================================== //
 // PIN DEFINITIONS                                                            //
 // ========================================================================== //
@@ -161,7 +158,7 @@ struct RemotePacket {
  */
 class InertialUnit {
   public:
-    InertialUnit(uint8_t address=0x68, uint32_t intervalMicros)
+    InertialUnit(uint32_t intervalMicros, uint8_t address=0x68)
       : mpu_address(address), timer(IntervalMicros), roll(0), pitch(0), yaw(0),
         dt(IntervalMicros * 1e-6f)
     {}
@@ -636,7 +633,7 @@ class PID {
 // CLASS INSTANTIATION                                                        //
 // ========================================================================== //
 
-
+InertialUnit IMU(1000); // TESTING
 
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
@@ -649,16 +646,18 @@ void setup() {
   if (VERBOSE) Serial.begin(9600);
 
   /* ===== TESTING ===== */
+  IMU.begin();
+
   // Test with LEDs (i don't have props and BLDCs)
   pinMode(5, OUTPUT); // Forward
   pinMode(9, OUTPUT); // Right
   pinMode(3, OUTPUT); // Left
   pinMode(6, OUTPUT); // Backward
 
-  digitalWrite(5, HIGH);
-  digitalWrite(9, HIGH);
-  digitalWrite(3, HIGH);
-  digitalWrite(6, HIGH);
+  digitalWrite(5, LOW);
+  digitalWrite(9, LOW);
+  digitalWrite(3, LOW);
+  digitalWrite(6, LOW);
   /* ===== TESTING ===== */
 }
 
@@ -671,6 +670,31 @@ void loop() {
   // Run PIDs
   // Mix outputs -> 4 motors
   // Write PWM
+
+  /* ===== TESTING ===== */
+  IMU.update();
+
+  float pitch = IMU.getPitch();
+  float roll  = IMU.getRoll();
+
+  auto mapAngleToPWM = [](float angle, float maxAngle=30.0f) -> uint8_t {
+    if (angle > maxAngle) angle = maxAngle;
+    if (angle < -maxAngle) angle = -maxAngle;
+    return (uint8_t)(angle + maxAngle) * 255.0f / (2 * maxAngle);
+  };
+
+  uint8_t pwmForward  = mapAngleToPWM(pitch);
+  uint8_t pwmBackward = 255 - pwmForward;
+
+  uint8_t pwmRight = mapAngleToPWM(roll);
+  uint8_t pwmLeft  = 255 - pwmRight;
+
+  digitalWrite(5, pwmForward);
+  digitalWrite(6, pwmBackward);
+  digitalWrite(9, pwmRight);
+  digitalWrite(3, pwmLeft);
+
+  /* ===== TESTING ===== */
 }
 
 // ========================================================================== //
