@@ -603,17 +603,17 @@ class UltrasonicSensor {
     * 
     * The state machine uses 4 states:
     * 
-    * IDLE: Checks if the timer is ready, when ready it fires a pulse on the
+    * IDLE. Checks if the timer is ready, when ready it fires a pulse on the
     * trigger pin and marks the pulse start, then changes the state to TRIGGER.
     * 
-    * TRIGGER: Checks if 10µs past since firing the pulse, if so it sets the
+    * TRIGGER. Checks if 10µs past since firing the pulse, if so it sets the
     * trigger PIN to low and marks the pulse start, then changes the state to
     * WAIT_ECHO.
     * 
-    * WAIT_ECHO: Checks if echo is high, if so, mark the pulse start and change
+    * WAIT_ECHO. Checks if echo is high, if so, mark the pulse start and change
     * the state to MEASURE.
     * 
-    * MEASURE: Checks if the echo is low, if so, grab the pulse duration, then
+    * MEASURE. Checks if the echo is low, if so, grab the pulse duration, then
     * calculate the distance in centimeters using the speed of sounds
     * return-trip. Finally change the state backto IDLE.
     */
@@ -764,8 +764,6 @@ class PID {
 /**
  * @brief Mixes throttle, roll, pitch & yaw and outputs values to the ESCs.
  * 
- * Expects that the ESCs range is 0-180.
- * 
  * Uses the following mixing (t = throttle, p = pitch, r = roll, y = yaw):
  * m1 = t + p + r - y
  * m2 = t + p - r + y
@@ -779,19 +777,8 @@ class PID {
  */
 class MotorMix {
   public:
-    MotorMix(uint8_t m1, uint8_t m2, uint8_t m3, uint8_t m4)
-      : pins{m1, m2, m3, m4}
-    {}
-
-    /**
-     * @brief Set the motor pin modes.
-     */
-    void begin() {
-      // Iterate pins and set them to output
-      for (int i=0; i<4; ++i)
-        pinMode(pins[i], OUTPUT);
-    }
-    
+    MotorMix(Motor m1, Motor m2, Motor m3, Motor m4) : motors{m1, m2, m3, m4} {}
+  
     /**
      * @brief Call to update the ESC values. Mixes inputs to run the quadcopter
      * motors the correct way.
@@ -812,20 +799,35 @@ class MotorMix {
 
       // Write to motor ESCs
       for (int i=0; i<4; ++i) {
-        m[i] = constrain(m[i], 0, 180);
-        analogWrite(pins[i], (int)m[i]);
+        m[i] = constrain(m[i], 0, 1000); // µs width max size
+        motors[i].setPulseWidth(map(m[i], 0, 1000, 1000, 2000));
       }
+
+      // Call update on each motor
+      for (int i=0; i<4; ++i)
+        motors[i].update();
     }
 
   private:
-    uint8_t pins[4];
+    Motor* motors[4];
 };
 
 // ========================================================================== //
 // CLASS INSTANTIATION                                                        //
 // ========================================================================== //
 
+// Mount this shit as close to center of mass.
+// It has to have horizontal reading of pitch=0 and roll=0 to ensure NO bias.
 InertialUnit IMU(1000);
+
+// Mounting should be like the following:
+/*
+  TIP: Blade must cut into the direction.
+  Front-left  = CCW
+  Front-right = CW
+  Back-right  = CCW
+  Back-left   = CW
+*/
 Motor MotorFR(3);
 
 // ========================================================================== //
