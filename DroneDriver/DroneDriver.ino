@@ -27,7 +27,7 @@
 // ========================================================================== //
 
 // Verbose messages, used when debugging. Ensure evaulation at compile-time.
-constexpr bool VERBOSE = false;
+constexpr bool VERBOSE = true;
 
 // Pich PID tuning values
 constexpr float pitchP = 3.0f;
@@ -704,7 +704,7 @@ class MotorMix {
 
   private:
     uint8_t pins[4];
-}
+};
 
 // ========================================================================== //
 // CLASS INSTANTIATION                                                        //
@@ -716,25 +716,38 @@ InertialUnit IMU(1000); // TESTING
 // LIFECYCLE FUNCTIONS                                                        //
 // ========================================================================== //
 
+void sp(int p) {
+  digitalWrite(3, HIGH);
+  delayMicroseconds(p);
+  digitalWrite(3, LOW);
+  delayMicroseconds(20000 - p);
+}
+
 /**
  * @brief Called by system at the startup once.
  */
 void setup() {
   if (VERBOSE) Serial.begin(9600);
 
+  pinMode(3, OUTPUT);
+  for (int i=0; i<150; i++)
+    sp(1000);
+
   /* ===== TESTING ===== */
   IMU.begin();
 
   // Test with LEDs (i don't have props and BLDCs)
-  pinMode(5, OUTPUT); // Forward
-  pinMode(9, OUTPUT); // Right
-  pinMode(3, OUTPUT); // Left
-  pinMode(6, OUTPUT); // Backward
+  /*
+  pinMode(3, OUTPUT); // Forward
+  pinMode(5, OUTPUT); // Right
+  pinMode(6, OUTPUT); // Left
+  pinMode(9, OUTPUT); // Backward
 
-  digitalWrite(5, LOW);
-  digitalWrite(9, LOW);
-  digitalWrite(3, LOW);
-  digitalWrite(6, LOW);
+  analogWrite(3, LOW);
+  analogWrite(5, LOW);
+  analogWrite(6, LOW);
+  analogWrite(9, LOW);
+  */
   /* ===== TESTING ===== */
 }
 
@@ -751,10 +764,23 @@ void loop() {
   /* ===== TESTING ===== */
   IMU.update();
 
+  // Step 2: Slowly ramp throttle until motor spins
+  for (int t = 1000; t <= 1600; t += 10) {
+    sp(t);
+    delay(100); // short delay so motor can respond
+  }
+
+  // Step 3: Hold a safe throttle for testing
+  while(true)
+    sp(1400); // adjust higher if motor is not spinning
+
+  /*
+
   float pitch = IMU.getPitch();
   float roll  = IMU.getRoll();
+  float yaw   = IMU.getYaw();
 
-  auto mapAngleToPWM = [](float angle, float maxAngle=30.0f) -> uint8_t {
+  auto mapAngleToPWM = [](float angle, float maxAngle=10.0f) -> uint8_t {
     if (angle > maxAngle) angle = maxAngle;
     if (angle < -maxAngle) angle = -maxAngle;
     return (uint8_t)(angle + maxAngle) * 255.0f / (2 * maxAngle);
@@ -766,10 +792,15 @@ void loop() {
   uint8_t pwmRight = mapAngleToPWM(roll);
   uint8_t pwmLeft  = 255 - pwmRight;
 
-  digitalWrite(5, pwmForward);
-  digitalWrite(6, pwmBackward);
-  digitalWrite(9, pwmRight);
-  digitalWrite(3, pwmLeft);
+  if (VERBOSE) {
+    Serial.println("Pitch:" + String(pitch) + " Roll:" + String(roll) + " Yaw:" + String(yaw) + " pwm:" + String(pwmForward));
+  }
+
+  //digitalWrite(3, pwmForward);
+  analogWrite(A1, pwmRight);
+  analogWrite(A2, pwmLeft);
+  analogWrite(A3, pwmBackward);
+  */
 
   /* ===== TESTING ===== */
 }
