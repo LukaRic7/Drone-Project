@@ -5,7 +5,10 @@
  * @date    2026-02-26
  * * @details This file handles the controlling of a drone using PID. It has
  * the ability to float (autostabilize) midair, aswell as being controlable
- * from remote.
+ * from remote - it also has the ability to autoland when low enough to the
+ * ground, aswell as autolanding it's able to sense when it's flipped to
+ * dangerous angles, which from here it will try to perform an emergency
+ * landing and reduce motor speed as to reduce possible damage from crash.
  * * HARDWARECONNECTIONS:
  */
 
@@ -70,12 +73,12 @@ constexpr float yawD = 0.0f;
  * security consistancy check using the rolling sequence.
  */
 struct RemotePacket {
-  uint8_t pitch;    // 5b (0-31)
-  uint8_t roll;     // 5b (0-31)
-  uint8_t throttle; // 5b (0-31)
-  uint8_t yaw;      // 5b (0-31)
-  uint8_t autoland; // 1b (0-1)
-  uint8_t seq;      // 3b (0-9) rolling counter
+  uint8_t pitch;    // 5bit (0-31)
+  uint8_t roll;     // 5bit (0-31)
+  uint8_t throttle; // 5bit (0-31)
+  uint8_t yaw;      // 5bit (0-31)
+  uint8_t autoland; // 1bit (0-1)
+  uint8_t seq;      // 3bit (0-9) rolling counter
 
   /**
    * @brief Encode a 5 byte buffer. Does not modify members of the struct.
