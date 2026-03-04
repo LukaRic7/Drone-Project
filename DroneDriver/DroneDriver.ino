@@ -219,6 +219,118 @@ class IntervalMicros {
 };
 
 /**
+ * @brief Non-blocking ESC driver, sends 50Hz pulses at 20ms periods.
+ * 
+ * When first starting the motor, it neeeds to be armed, otherwise the ESC
+ * will not listen to further input. The arming takes ~3 seconds.
+ * 
+ * @param dataPinESC uint32_t. Data pin to drive ESC from.
+ */
+class Motor {
+  public:
+    Motor(uint32_t dataPinESC)
+      : pulseMicros(1000), pin(dataPinESC), timer(20000),
+        state(State::DISABLED), armEndTime(0)
+    {
+      // Set pin mode
+      pinMode(pin, OUTPUT);
+
+      // Set to low at the start
+      digitalWrite(pin, LOW);
+    }
+
+    /**
+     * @brief Arms the motor (takes ~3 seconds).
+     * 
+     * Tells ESC to send minimum throttle pulses for a few seconds to arm the
+     * motor, otherwise it will not take inputs.
+     * 
+     * @param armTimeMs uint32_t. Time spent arming motor, defaults to 3000ms.
+     */
+    void arm(uint32_t armTimeMs=3000) {
+      // Define timings
+      pulseMicros = 1000;
+      armEndTime = millis() + armTimeMs;
+
+      // Configure timer
+      timer.setInterval(20000);
+      timer.reset();
+
+      state = State::LOW_WAIT;
+    }
+
+    /**
+     * @brief Disarms the motor.
+     * 
+     * Writing low to the pin and sets the state to disabled.
+     */
+    void disarm() {
+      state = State::DISABLED;
+      digitalWrite(pin, LOW);
+    }
+
+    /**
+     * @brief Sets throttle of the motor.
+     * 
+     * If the motor is arming, the pulse will NOT be changed, instead setting
+     * it to 1000µs (minimum).
+     * 
+     * @param us uint32_t. Pulse width, typically between 1000-2000µs.
+     */
+    void setPulseWidth(uint32_t us) {
+      pulseMicros = millis() < armEndTime ? us : 1000;
+    }
+  
+    /**
+     * @brief Call every loop. Handles the pulse firing to drive the ESC.
+     */
+    void update() {
+      if (state == State::DISABLED)
+        return;
+
+      switch (state) {
+        case State::LOW_WAIT:
+          if (timer.ready()) {
+            digitalWrite(pin, HIGH);
+
+            // Configure timer
+            timer.setInterval(pulseMicros);
+            timer.reset();
+
+            state = State::HIGH_WAIT;
+          }
+          break;
+        
+        case State::HIGH_WAIT:
+          if (timer.ready()) {
+            digitalWrite(pin, LOW);
+
+            // Configure timer
+            timer.setInterval(20000);
+            timer.reset();
+
+            state = State::LOW_WAIT;
+          }
+          break;
+
+          default:
+            break;
+      }
+    }
+
+  private:
+    enum class State { DISABLED, LOW_WAIT, HIGH_WAIT };
+    State state;
+
+    IntervalMicros timer;
+
+    uint32_t pin;
+
+    uint32_t armEndTime;
+    uint32_t pulseMicros;
+}
+
+/**
  * @brief IMU Driver, calculate pitch, roll and yaw from the MPU-6050.
  * 
  * When calculating the pitch and roll, its somewhat accurate because both
@@ -710,18 +822,12 @@ class MotorMix {
 // CLASS INSTANTIATION                                                        //
 // ========================================================================== //
 
-InertialUnit IMU(1000); // TESTING
+InertialUnit IMU(1000);
+Motor MotorFR(3);
 
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
 // ========================================================================== //
-
-void sp(int p) {
-  digitalWrite(3, HIGH);
-  delayMicroseconds(p);
-  digitalWrite(3, LOW);
-  delayMicroseconds(20000 - p);
-}
 
 /**
  * @brief Called by system at the startup once.
@@ -729,26 +835,8 @@ void sp(int p) {
 void setup() {
   if (VERBOSE) Serial.begin(9600);
 
-  pinMode(3, OUTPUT);
-  for (int i=0; i<150; i++)
-    sp(1000);
-
-  /* ===== TESTING ===== */
   IMU.begin();
-
-  // Test with LEDs (i don't have props and BLDCs)
-  /*
-  pinMode(3, OUTPUT); // Forward
-  pinMode(5, OUTPUT); // Right
-  pinMode(6, OUTPUT); // Left
-  pinMode(9, OUTPUT); // Backward
-
-  analogWrite(3, LOW);
-  analogWrite(5, LOW);
-  analogWrite(6, LOW);
-  analogWrite(9, LOW);
-  */
-  /* ===== TESTING ===== */
+  MotorFR.arm();
 }
 
 /**
@@ -761,48 +849,15 @@ void loop() {
   // Mix outputs -> 4 motors
   // Write PWM
 
-  /* ===== TESTING ===== */
   IMU.update();
-
-  // Step 2: Slowly ramp throttle until motor spins
-  for (int t = 1000; t <= 1600; t += 10) {
-    sp(t);
-    delay(100); // short delay so motor can respond
-  }
-
-  // Step 3: Hold a safe throttle for testing
-  while(true)
-    sp(1400); // adjust higher if motor is not spinning
-
-  /*
-
+  MotorFR.update();
+  
   float pitch = IMU.getPitch();
-  float roll  = IMU.getRoll();
-  float yaw   = IMU.getYaw();
 
-  auto mapAngleToPWM = [](float angle, float maxAngle=10.0f) -> uint8_t {
-    if (angle > maxAngle) angle = maxAngle;
-    if (angle < -maxAngle) angle = -maxAngle;
-    return (uint8_t)(angle + maxAngle) * 255.0f / (2 * maxAngle);
-  };
+  float maxPitch = 30.0f;
+  int us = map(pitch, 0, maxPitch, 1000, 2000);
 
-  uint8_t pwmForward  = mapAngleToPWM(pitch);
-  uint8_t pwmBackward = 255 - pwmForward;
-
-  uint8_t pwmRight = mapAngleToPWM(roll);
-  uint8_t pwmLeft  = 255 - pwmRight;
-
-  if (VERBOSE) {
-    Serial.println("Pitch:" + String(pitch) + " Roll:" + String(roll) + " Yaw:" + String(yaw) + " pwm:" + String(pwmForward));
-  }
-
-  //digitalWrite(3, pwmForward);
-  analogWrite(A1, pwmRight);
-  analogWrite(A2, pwmLeft);
-  analogWrite(A3, pwmBackward);
-  */
-
-  /* ===== TESTING ===== */
+  MotorFR.setPulseWidth(us);
 }
 
 // ========================================================================== //
@@ -815,25 +870,3 @@ void loop() {
 // HELPER FUNCTIONS                                                           //
 // ========================================================================== //
 
-
-
-// ========================================================================== //
-// NOTES                                                                      //
-// ========================================================================== //
-/*
-Approx drone weight: 1020g (255g/motor)
-- Frame       ~ 200g
-- 4 Motors    ~ 250g
-- 4 ESCs      ~ 120g
-- Battery     ~ 300g
-- Electronics ~ 100g
-- Props/Wires ~ 50g
-
-Aim for: 255 * 2 = 510g thrust/motor (2040g total)
-
-Best props are ~25cm span, bigger = better & ^efficient
-Arms should then be around 45cm (pulled out of my ass, should be enough)
-
-Battery size: ~8000mAh (~15 minute flight)
-
-*/
