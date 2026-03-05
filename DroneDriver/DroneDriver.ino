@@ -16,11 +16,10 @@
 // INCLUDE LIBRARIES                                                          //
 // ========================================================================== //
 
-// RadioHead Amplitude Shifting Keying, 433MHz frequenzy
-#define RH_ASK_ARDUINO_USE_TIMER2
-#include <RH_ASK.h>
+#include <Arduino.h>
 
-#include <Servo.h>
+// RadioHead Amplitude Shifting Keying, 433MHz frequenzy
+#include <RH_ASK.h>
 
 // Serial Peripheral Interface library
 #include <SPI.h>
@@ -224,6 +223,71 @@ class IntervalMicros {
     uint32_t last;
 };
 
+class Motor {
+public:
+    Motor(uint8_t pin) : pin(pin), pulseMicros(1000), targetPulse(1000), armed(false) {}
+
+    void begin() {
+        pinMode(pin, OUTPUT);
+        digitalWrite(pin, LOW);
+
+        cli();
+        TCCR1A = 0;
+        TCCR1B = 0;
+
+        if(pin == 9) TCCR1A |= (1 << COM1A1);
+        else          TCCR1A |= (1 << COM1B1);
+
+        // Fast PWM, TOP = ICR1
+        TCCR1A |= (1 << WGM11);
+        TCCR1B |= (1 << WGM13) | (1 << WGM12);
+
+        // prescaler = 8
+        TCCR1B |= (1 << CS11);
+
+        // 50Hz period
+        ICR1 = 40000;
+
+        updateTimerOutput();
+        sei();
+    }
+
+    void arm(uint32_t armTimeMs = 3000) {
+        pulseMicros = 1000;
+        targetPulse = 1000;
+        armed = true;
+        armEndMillis = millis() + armTimeMs;
+        updateTimerOutput();
+    }
+
+    void setPulseWidth(uint16_t us) {
+        targetPulse = constrain(us, 1000, 2000);
+    }
+
+    void update() {
+        if (!armed) return;
+
+        if (millis() > armEndMillis) {
+            if (pulseMicros < targetPulse) pulseMicros++;
+            else if (pulseMicros > targetPulse) pulseMicros--;
+            updateTimerOutput();
+        }
+    }
+
+private:
+    uint8_t pin;
+    uint16_t pulseMicros;
+    uint16_t targetPulse;
+    bool armed;
+    uint32_t armEndMillis;
+
+    void updateTimerOutput() {
+        uint16_t ticks = pulseMicros * 2;
+        if (pin == 9) OCR1A = ticks;
+        else if (pin == 10) OCR1B = ticks;
+    }
+};
+
 /**
  * @brief Non-blocking ESC driver, sends 50Hz pulses at 20ms periods.
  * 
@@ -232,9 +296,9 @@ class IntervalMicros {
  * 
  * @param dataPinESC uint32_t. Data pin to drive ESC from.
  */
-class Motor {
+class MotorA {
   public:
-    Motor(uint32_t dataPinESC)
+    MotorA(uint32_t dataPinESC)
       : pin(dataPinESC), pulseMicros(1000), targetPulse(1000), throttleStep(10),
         state(State::LOW_WAIT), armEndMicros(0), lowTimer(19000),
         rampTimer(100000), highTimer(1000)
@@ -254,7 +318,7 @@ class Motor {
      * 
      * @param armTimeMs uint32_t. Time spent arming motor, defaults to 3000ms.
      */
-    void arm(uint32_t armTimeMs=6000) {
+    void arm(uint32_t armTimeMs=3000) {
       // Define timings
       pulseMicros = 1000;
       targetPulse = 1000;
@@ -848,7 +912,7 @@ InertialUnit IMU(1000);
   Back-right  = CCW
   Back-left   = CW
 */
-Servo MotorFR;
+Motor motorFR(9); // Pin 9 for OC1A
 
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
@@ -861,7 +925,15 @@ void setup() {
   if (VERBOSE) Serial.begin(9600);
 
   IMU.begin();
-  MotorFR.attach(3);
+  motorFR.begin();
+  motorFR.arm();
+
+  // Non-blocking 3s arming
+  uint32_t startMillis = millis();
+  while (millis() - startMillis < 3000) {
+      motorFR.update(); // keep PWM alive and smooth
+      // Optional: could do serial prints here if needed
+  }
 }
 
 /**
@@ -875,12 +947,14 @@ void loop() {
   // Write PWM
 
   IMU.update();
+  motorFR.update();
+
   float pitch = IMU.getPitch();
 
   long maxPitch = 10.0;
   int us = map(max(0, pitch), 0, maxPitch, 1600, 2000);
 
-  MotorFR.writeMicroseconds(us);
+  motorFR.setPulseWidth(us);
 }
 
 // ========================================================================== //
