@@ -16,6 +16,7 @@
 // INCLUDE LIBRARIES                                                          //
 // ========================================================================== //
 
+// Needed for basic core operations
 #include <Arduino.h>
 
 // RadioHead Amplitude Shifting Keying, 433MHz frequenzy
@@ -223,198 +224,125 @@ class IntervalMicros {
     uint32_t last;
 };
 
-class Motor {
-public:
-    Motor(uint8_t pin) : pin(pin), pulseMicros(1000), targetPulse(1000), armed(false) {}
-
-    void begin() {
-        pinMode(pin, OUTPUT);
-        digitalWrite(pin, LOW);
-
-        cli();
-        TCCR1A = 0;
-        TCCR1B = 0;
-
-        if(pin == 9) TCCR1A |= (1 << COM1A1);
-        else          TCCR1A |= (1 << COM1B1);
-
-        // Fast PWM, TOP = ICR1
-        TCCR1A |= (1 << WGM11);
-        TCCR1B |= (1 << WGM13) | (1 << WGM12);
-
-        // prescaler = 8
-        TCCR1B |= (1 << CS11);
-
-        // 50Hz period
-        ICR1 = 40000;
-
-        updateTimerOutput();
-        sei();
-    }
-
-    void arm(uint32_t armTimeMs = 3000) {
-        pulseMicros = 1000;
-        targetPulse = 1000;
-        armed = true;
-        armEndMillis = millis() + armTimeMs;
-        updateTimerOutput();
-    }
-
-    void setPulseWidth(uint16_t us) {
-        targetPulse = constrain(us, 1000, 2000);
-    }
-
-    void update() {
-        if (!armed) return;
-
-        if (millis() > armEndMillis) {
-            if (pulseMicros < targetPulse) pulseMicros++;
-            else if (pulseMicros > targetPulse) pulseMicros--;
-            updateTimerOutput();
-        }
-    }
-
-private:
-    uint8_t pin;
-    uint16_t pulseMicros;
-    uint16_t targetPulse;
-    bool armed;
-    uint32_t armEndMillis;
-
-    void updateTimerOutput() {
-        uint16_t ticks = pulseMicros * 2;
-        if (pin == 9) OCR1A = ticks;
-        else if (pin == 10) OCR1B = ticks;
-    }
-};
-
 /**
- * @brief Non-blocking ESC driver, sends 50Hz pulses at 20ms periods.
+ * @brief Drives an ESC at 50Hz with a pulse between 1000-2000µs. Uses Timer1.
  * 
- * When first starting the motor, it neeeds to be armed, otherwise the ESC
- * will not listen to further input. The arming takes ~3 seconds.
+ * Pins must be either 9OC1A or OC1B pins (9 or 10), these belong to Timer1.
  * 
- * @param dataPinESC uint32_t. Data pin to drive ESC from.
+ * Bitshifting logic was found in the ATmega328P datasheet.
+ * 
+ * @param pin uint8_t. Which pin to drive the motor from. Choose either 9 or 10.
  */
-class MotorA {
+class Motor {
   public:
-    MotorA(uint32_t dataPinESC)
-      : pin(dataPinESC), pulseMicros(1000), targetPulse(1000), throttleStep(10),
-        state(State::LOW_WAIT), armEndMicros(0), lowTimer(19000),
-        rampTimer(100000), highTimer(1000)
-    {
-      // Set pin mode
-      pinMode(pin, OUTPUT);
-
-      // Set to low at the start
-      digitalWrite(pin, LOW);
-    }
+    Motor(uint8_t pin)
+      : pin(pin), pulseMicros(1000), targetPulse(1000), armed(false)
+    {}
 
     /**
-     * @brief Arms the motor (takes ~3 seconds).
+     * @brief Sets pin modes and configures Timer1 to output PWM at 50Hz.
      * 
-     * Tells ESC to send minimum throttle pulses for a few seconds to arm the
-     * motor, otherwise it will not take inputs.
+     * When configuring the timer, it clears the registers responsible for:
+     * A. TCCR1A = COM & PWM mode bits.
+     * B. TCCR1B = WGM & Prescaler.
      * 
-     * @param armTimeMs uint32_t. Time spent arming motor, defaults to 3000ms.
+     * It then recognizes which pin is being used (9 or 10) and sets the pin to
+     * non-inverting PWM. After it defines how the timer counts and generates
+     * PWM, which is on fast mode.
+     * 
+     * Next, it sets the prescaler, which is resposible for dividing the main
+     * clock (16MHz on an Arduino Uno) to slow down the timer. After this it
+     * sets the ICR1 (Input Capture Register) to 40k, this is the top value.
+     * The PWM frequency is calculated: F_CPU / (Prescaler * 40k) ~= 50Hz. With
+     * filled values: 16MHz / (8 * 40,000) ~= 50Hz. This is the standard ESC
+     * update rate needed to drive the motor.
      */
-    void arm(uint32_t armTimeMs=3000) {
-      // Define timings
+    void begin() {
+      pinMode(pin, OUTPUT);
+      digitalWrite(pin, LOW);
+
+      // Clear interrupts.
+      cli();
+
+      // Clear timer counter 1 control register A & B
+      TCCR1A = 0; // Compare Output Mode (COM) & PWM mode bits
+      TCCR1B = 0; // Waveform Generation Mode (WGM) & Prescaler
+
+      // Recognize pin
+      if (pin == 9) TCCR1A |= (1 << COM1A1);
+      else          TCCR1A |= (1 << COM1B1);
+
+      // Fast PWM, TOP = ICR1
+      TCCR1A |= (1 << WGM11);
+      TCCR1B |= (1 << WGM13) | (1 << WGM12);
+
+      // Prescaler = 8
+      TCCR1B |= (1 << CS11);
+
+      // 50Hz period
+      ICR1 = 40000;
+
+      // Set initial pulse and interrupts.
+      updateTimerOutput();
+      sei();
+    }
+    
+    /**
+     * @brief Arm the motor, starting at 1000µs for at least 3 seconds.
+     * 
+     * This is needed to run the motor.
+     * 
+     * @param armTimeMs uint32_t. Duration to arm the motor, defaults to 3000ms.
+     */
+    void arm(uint32_t armTimeMs = 3000) {
       pulseMicros = 1000;
       targetPulse = 1000;
-      armEndMicros = micros() + armTimeMs * 1000ULL;
-
-      state = State::LOW_WAIT;
-
-      // Configure timers
-      highTimer.reset();
-      lowTimer.reset();
-      rampTimer.reset();
+      armed = true;
+      armEndMillis = millis() + armTimeMs;
+      updateTimerOutput(); // Immediately update OCR1A/OCR1B
     }
-
+    
     /**
-     * @brief Disarms the motor.
+     * @brief Set the desired pulse width.
      * 
-     * Writing low to the pin and sets the state to disabled.
+     * @param us uint16_t. Desired motor speed, usually between 1000-2000µs.
      */
-    void disarm() {
-      state = State::DISABLED;
-      digitalWrite(pin, LOW);
-    }
-
-    /**
-     * @brief Sets throttle of the motor.
-     * 
-     * If the motor is arming, the pulse will NOT be changed, instead setting
-     * it to 1000µs (minimum).
-     * 
-     * @param us uint32_t. Pulse width, typically between 1000-2000µs.
-     */
-    void setPulseWidth(uint32_t us) {
+    void setPulseWidth(uint16_t us) {
       targetPulse = constrain(us, 1000, 2000);
-      
-      //highTimer.setInterval(pulseMicros);
-      //lowTimer.setInterval(20000 - pulseMicros);
     }
-  
+    
     /**
-     * @brief Call every loop. Handles the pulse firing to drive the ESC.
+     * @brief Call every update, only runs if motor is armed.
+     * 
+     * Gradually increases pulse width until reaching target pulse.
      */
     void update() {
-      if (state == State::DISABLED) return;
+      if (!armed) return;
 
-      uint32_t now = micros();
-      bool rampReady = rampTimer.ready();
-
-      if (rampTimer.ready() && micros() > armEndMicros) {
-          uint32_t old = pulseMicros;
-          if (pulseMicros < targetPulse)
-              pulseMicros = min(pulseMicros + throttleStep, targetPulse);
-          else if (pulseMicros > targetPulse)
-              pulseMicros = max(pulseMicros - throttleStep, targetPulse);
-
-          if (pulseMicros != old) {
-              highTimer.setInterval(pulseMicros);
-              lowTimer.setInterval(20000 - pulseMicros);
-          }
-      }
-
-      if (rampReady) Serial.println(pulseMicros);
-
-      switch (state) {
-        case State::LOW_WAIT:
-          if (lowTimer.ready()) {
-            digitalWrite(pin, HIGH);
-            highTimer.setInterval(pulseMicros);
-            highTimer.reset();
-            state = State::HIGH_WAIT;
-          }
-          break;
-        
-        case State::HIGH_WAIT:
-          if (highTimer.ready()) {
-            digitalWrite(pin, LOW);
-            lowTimer.setInterval(20000 - pulseMicros);
-            lowTimer.reset();
-            state = State::LOW_WAIT;
-          }
-          break;
-
-          default:
-            break;
+      if (millis() > armEndMillis) {
+        if      (pulseMicros < targetPulse) pulseMicros++;
+        else if (pulseMicros > targetPulse) pulseMicros--;
+        updateTimerOutput();
       }
     }
 
   private:
-    enum class State { DISABLED, LOW_WAIT, HIGH_WAIT };
-    State state;
+    uint8_t pin;
 
-    uint32_t pin;
-
-    uint32_t pulseMicros, targetPulse, throttleStep;
-    uint64_t armEndMicros;
-
-    IntervalMicros highTimer, lowTimer, rampTimer;
+    uint16_t pulseMicros;
+    uint16_t targetPulse;
+    
+    bool armed;
+    uint32_t armEndMillis;
+    
+    /**
+     * @brief Converts microseconds to timer ticks and sets compare register.
+     */
+    void updateTimerOutput() {
+      uint16_t ticks = pulseMicros * 2;
+      if      (pin == 9)  OCR1A = ticks;
+      else if (pin == 10) OCR1B = ticks;
+    }
 };
 
 /**
@@ -912,7 +840,7 @@ InertialUnit IMU(1000);
   Back-right  = CCW
   Back-left   = CW
 */
-Motor motorFR(9); // Pin 9 for OC1A
+Motor motorFR(9); // Pin 9 for OC1A (Output Compare 1 <Channel> A)
 
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
@@ -931,8 +859,7 @@ void setup() {
   // Non-blocking 3s arming
   uint32_t startMillis = millis();
   while (millis() - startMillis < 3000) {
-      motorFR.update(); // keep PWM alive and smooth
-      // Optional: could do serial prints here if needed
+      motorFR.update();
   }
 }
 
