@@ -17,7 +17,10 @@
 // ========================================================================== //
 
 // RadioHead Amplitude Shifting Keying, 433MHz frequenzy
+#define RH_ASK_ARDUINO_USE_TIMER2
 #include <RH_ASK.h>
+
+#include <Servo.h>
 
 // Serial Peripheral Interface library
 #include <SPI.h>
@@ -214,7 +217,7 @@ class IntervalMicros {
     /**
      * @brief Get the currently used interval.
      */
-    bool getInterval() const { return interval; }
+    uint32_t getInterval() const { return interval; }
 
   private:
     uint32_t interval;
@@ -232,8 +235,9 @@ class IntervalMicros {
 class Motor {
   public:
     Motor(uint32_t dataPinESC)
-      : pulseMicros(1000), pin(dataPinESC), timer(20000),
-        state(State::DISABLED), armEndTime(0)
+      : pin(dataPinESC), pulseMicros(1000), targetPulse(1000), throttleStep(10),
+        state(State::LOW_WAIT), armEndMicros(0), lowTimer(19000),
+        rampTimer(100000), highTimer(1000)
     {
       // Set pin mode
       pinMode(pin, OUTPUT);
@@ -250,16 +254,18 @@ class Motor {
      * 
      * @param armTimeMs uint32_t. Time spent arming motor, defaults to 3000ms.
      */
-    void arm(uint32_t armTimeMs=3000) {
+    void arm(uint32_t armTimeMs=6000) {
       // Define timings
       pulseMicros = 1000;
-      armEndTime = millis() + armTimeMs;
-
-      // Configure timer
-      timer.setInterval(20000);
-      timer.reset();
+      targetPulse = 1000;
+      armEndMicros = micros() + armTimeMs * 1000ULL;
 
       state = State::LOW_WAIT;
+
+      // Configure timers
+      highTimer.reset();
+      lowTimer.reset();
+      rampTimer.reset();
     }
 
     /**
@@ -281,37 +287,51 @@ class Motor {
      * @param us uint32_t. Pulse width, typically between 1000-2000µs.
      */
     void setPulseWidth(uint32_t us) {
-      pulseMicros = millis() < armEndTime ? us : 1000;
+      targetPulse = constrain(us, 1000, 2000);
+      
+      //highTimer.setInterval(pulseMicros);
+      //lowTimer.setInterval(20000 - pulseMicros);
     }
   
     /**
      * @brief Call every loop. Handles the pulse firing to drive the ESC.
      */
     void update() {
-      if (state == State::DISABLED)
-        return;
+      if (state == State::DISABLED) return;
+
+      uint32_t now = micros();
+      bool rampReady = rampTimer.ready();
+
+      if (rampTimer.ready() && micros() > armEndMicros) {
+          uint32_t old = pulseMicros;
+          if (pulseMicros < targetPulse)
+              pulseMicros = min(pulseMicros + throttleStep, targetPulse);
+          else if (pulseMicros > targetPulse)
+              pulseMicros = max(pulseMicros - throttleStep, targetPulse);
+
+          if (pulseMicros != old) {
+              highTimer.setInterval(pulseMicros);
+              lowTimer.setInterval(20000 - pulseMicros);
+          }
+      }
+
+      if (rampReady) Serial.println(pulseMicros);
 
       switch (state) {
         case State::LOW_WAIT:
-          if (timer.ready()) {
+          if (lowTimer.ready()) {
             digitalWrite(pin, HIGH);
-
-            // Configure timer
-            timer.setInterval(pulseMicros);
-            timer.reset();
-
+            highTimer.setInterval(pulseMicros);
+            highTimer.reset();
             state = State::HIGH_WAIT;
           }
           break;
         
         case State::HIGH_WAIT:
-          if (timer.ready()) {
+          if (highTimer.ready()) {
             digitalWrite(pin, LOW);
-
-            // Configure timer
-            timer.setInterval(20000);
-            timer.reset();
-
+            lowTimer.setInterval(20000 - pulseMicros);
+            lowTimer.reset();
             state = State::LOW_WAIT;
           }
           break;
@@ -325,13 +345,13 @@ class Motor {
     enum class State { DISABLED, LOW_WAIT, HIGH_WAIT };
     State state;
 
-    IntervalMicros timer;
-
     uint32_t pin;
 
-    uint32_t armEndTime;
-    uint32_t pulseMicros;
-}
+    uint32_t pulseMicros, targetPulse, throttleStep;
+    uint64_t armEndMicros;
+
+    IntervalMicros highTimer, lowTimer, rampTimer;
+};
 
 /**
  * @brief IMU Driver, calculate pitch, roll and yaw from the MPU-6050.
@@ -777,7 +797,7 @@ class PID {
  */
 class MotorMix {
   public:
-    MotorMix(Motor m1, Motor m2, Motor m3, Motor m4) : motors{m1, m2, m3, m4} {}
+    MotorMix(Motor* m1, Motor* m2, Motor* m3, Motor* m4) : motors{m1, m2, m3, m4} {}
   
     /**
      * @brief Call to update the ESC values. Mixes inputs to run the quadcopter
@@ -800,12 +820,12 @@ class MotorMix {
       // Write to motor ESCs
       for (int i=0; i<4; ++i) {
         m[i] = constrain(m[i], 0, 1000); // µs width max size
-        motors[i].setPulseWidth(map(m[i], 0, 1000, 1000, 2000));
+        motors[i]->setPulseWidth(map(m[i], 0, 1000, 1000, 2000));
       }
 
       // Call update on each motor
       for (int i=0; i<4; ++i)
-        motors[i].update();
+        motors[i]->update();
     }
 
   private:
@@ -828,7 +848,7 @@ InertialUnit IMU(1000);
   Back-right  = CCW
   Back-left   = CW
 */
-Motor MotorFR(3);
+Servo MotorFR;
 
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
@@ -841,7 +861,7 @@ void setup() {
   if (VERBOSE) Serial.begin(9600);
 
   IMU.begin();
-  MotorFR.arm();
+  MotorFR.attach(3);
 }
 
 /**
@@ -855,14 +875,12 @@ void loop() {
   // Write PWM
 
   IMU.update();
-  MotorFR.update();
-  
   float pitch = IMU.getPitch();
 
-  float maxPitch = 30.0f;
-  int us = map(pitch, 0, maxPitch, 1000, 2000);
+  long maxPitch = 10.0;
+  int us = map(max(0, pitch), 0, maxPitch, 1600, 2000);
 
-  MotorFR.setPulseWidth(us);
+  MotorFR.writeMicroseconds(us);
 }
 
 // ========================================================================== //
