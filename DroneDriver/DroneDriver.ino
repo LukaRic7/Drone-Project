@@ -378,18 +378,24 @@ class Motor {
     }
 
     /**
-     * @brief .
+     * @brief Initialize the identified timer, setting the PWM to fast mode.
+     * 
+     * Timer counts from 0 - Input Capture Register. Doesn't configure the
+     * Output Compare Register. Sets the prescaler to 8
      */
     void initTimer() {
       switch (timer) {
         case Timer::T4:
           if (!timer4Initialized) {
+            // Clear registers
             TCCR4A = 0;
             TCCR4B = 0;
   
+            // Configure for fast Waveform Generation Mode
             TCCR4A |= (1 << WGM41);
             TCCR4B |= (1 << WGM42) | (1 << WGM43);
-  
+            
+            // Set prescaler (8 = 2MHz)
             TCCR4B |= (1 << CS41);
   
             ICR4 = 40000;
@@ -400,12 +406,15 @@ class Motor {
         
         case Timer::T5:
           if (!timer5Initialized) {
+            // Clear registers
             TCCR5A = 0;
             TCCR5B = 0;
-  
+            
+            // Configure for fast Waveform Generation Mode
             TCCR5A |= (1 << WGM51);
             TCCR5B |= (1 << WGM52) | (1 << WGM53);
-  
+            
+            // Set prescaler (8 = 2MHz)
             TCCR5B |= (1 << CS51);
   
             ICR5 = 40000;
@@ -417,7 +426,7 @@ class Motor {
     }
 
     /**
-     * @brief .
+     * @brief Enable non-inverting PWM on the correct channel.
      */
     void attachChannel() {
       switch (timer) {
@@ -952,7 +961,7 @@ InertialUnit IMU(1000);
   Back-right  = CCW
   Back-left   = CW
 */
-Motor motorFR(45); // Pin 9 for OC1A (Output Compare 1 <Channel> A)
+Motor motorFR(45);
 
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
