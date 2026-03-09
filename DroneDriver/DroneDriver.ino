@@ -336,8 +336,8 @@ class Motor {
     bool armed;
     uint32_t armEndMillis;
 
-    static bool timer4Initialized = false;
-    static bool timer5Initialized = false;
+    static bool timer4Initialized;
+    static bool timer5Initialized;
 
     /**
      * @brief Sets the Timer identifications based on the pin, then initializes
@@ -345,7 +345,7 @@ class Motor {
      * 
      * @param pin uint8_t. Pin to setup.
      */
-    void setupTimerForPin(uint8_t pin) {
+    bool setupTimerForPin(uint8_t pin) {
       switch (pin) {
         case 6:
           timer   = Timer::T4;
@@ -441,13 +441,13 @@ class Motor {
       
       switch (timer) {
         case Timer::T4:
-          if      (channel == Channel::A) TCCR4A |= (1 << COM4A1);
-          else if (channel == Channel::B) TCCR4A |= (1 << COM4B1);
+          if      (channel == Channel::A) OCR4A = ticks;
+          else if (channel == Channel::B) OCR4B = ticks;
           break;
 
         case Timer::T5:
-          if      (channel == Channel::A) TCCR5A |= (1 << COM5A1);
-          else if (channel == Channel::B) TCCR5A |= (1 << COM5B1);
+          if      (channel == Channel::A) OCR5A = ticks;
+          else if (channel == Channel::B) OCR5B = ticks;
           break;
       }
     }
