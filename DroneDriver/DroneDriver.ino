@@ -35,26 +35,47 @@
 // Verbose messages, used when debugging. Ensure evaulation at compile-time.
 constexpr bool VERBOSE = true;
 
+// Timings
+constexpr int INERTIAL_INTERVAL_MICROS = 1000;
+constexpr int USENSOR_INTERVAL_MICROS  = 1000;
+
 // Pich PID tuning values
-constexpr float pitchP = 3.0f;
-constexpr float pitchI = 0.5f;
-constexpr float pitchD = 0.8f;
+constexpr float PITCH_P = 3.0f;
+constexpr float PITCH_I = 0.5f;
+constexpr float PITCH_D = 0.8f;
+constexpr int PITCH_OUTPUT_LIMIT    = 300;
+constexpr int PITCH_INTEGRAL_LIMIT  = 45;
+constexpr int PITCH_INTERVAL_MICROS = 15000;
 
 // Roll PID tuning values
-constexpr float rollP = 3.0f;
-constexpr float rollI = 0.5f;
-constexpr float rollD = 0.8f;
+constexpr float ROLL_P = 3.0f;
+constexpr float ROLL_I = 0.5f;
+constexpr float ROLL_D = 0.8f;
+constexpr int ROLL_OUTPUT_LIMIT    = 300;
+constexpr int ROLL_INTEGRAL_LIMIT  = 45;
+constexpr int ROLL_INTERVAL_MICROS = 15000;
 
 // Yaw PID tuning values
-constexpr float yawP = 1.2f;
-constexpr float yawI = 0.1f;
-constexpr float yawD = 0.0f;
+constexpr float YAW_P = 1.2f;
+constexpr float YAW_I = 0.1f;
+constexpr float YAW_D = 0.0f;
+constexpr int YAW_OUTPUT_LIMIT    = 300;
+constexpr int YAW_INTEGRAL_LIMIT  = 45;
+constexpr int YAW_INTERVAL_MICROS = 15000;
 
 // ========================================================================== //
 // PIN DEFINITIONS                                                            //
 // ========================================================================== //
 
+// Motor ESCs
+constexpr uint8_t MOTOR_FR = 45;
+constexpr uint8_t MOTOR_FL = 46;
+constexpr uint8_t MOTOR_BR = 6;
+constexpr uint8_t MOTOR_BL = 7;
 
+// Ultrasonic pins
+constexpr uint8_t USENSOR_TRIGGER = 3;
+constexpr uint8_t USENSOR_ECHO    = 4;
 
 // ========================================================================== //
 // ENUMS / STRUCTS                                                            //
@@ -157,10 +178,6 @@ struct RemotePacket {
     return true;
   }
 };
-
-// ========================================================================== //
-// RUNTIME GLOBAL VARIABLES                                                   //
-// ========================================================================== //
 
 // ========================================================================== //
 // CLASSES                                                                    //
@@ -928,8 +945,8 @@ class MotorMix {
 
       // Write to motor ESCs
       for (int i=0; i<4; ++i) {
-        m[i] = constrain(m[i], 0, 1000); // µs width max size
-        motors[i]->setPulseWidth(map(m[i], 0, 1000, 1000, 2000));
+        m[i] = constrain(m[i], 1000, 2000); // µs width max size
+        motors[i]->setPulseWidth(m[i]);
       }
 
       // Call update on each motor
@@ -945,23 +962,42 @@ class MotorMix {
 // CLASS INSTANTIATION                                                        //
 // ========================================================================== //
 
-// Allocate memory for motor timer flags
+// Allocate memory for motor timer flags, set default to false
 bool Motor::timer4Initialized = false;
 bool Motor::timer5Initialized = false;
 
-// Mount this shit as close to center of mass.
-// It has to have horizontal reading of pitch=0 and roll=0 to ensure NO bias.
-InertialUnit IMU(1000);
+// Instantiate the inertial measurement unit driver
+InertialUnit IMU(INERTIAL_INTERVAL_MICROS);
 
-// Mounting should be like the following:
-/*
-  TIP: Blade must cut into the direction.
-  Front-left  = CCW
-  Front-right = CW
-  Back-right  = CCW
-  Back-left   = CW
-*/
-Motor motorFR(45);
+// Instantiate all motor ESC drivers
+Motor motorFR(MOTOR_FR);
+Motor motorFL(MOTOR_FL);
+Motor motorBR(MOTOR_BR);
+Motor motorBL(MOTOR_BL);
+
+// Instatiate motor mixer
+MotorMix motorMix(&motorFL, &motorFR, &motorBR, &motorBL);
+
+// Instatiate the radio controller
+Radio radio;
+
+// Instatiate the ultrasonic sensor driver
+UltrasonicSensor uSensor(
+  USENSOR_TRIGGER, USENSOR_ECHO, USENSOR_INTERVAL_MICROS
+);
+
+// Instantiate the PID controllers
+PID pitchPID(
+  PITCH_P, PITCH_I, PITCH_D, PITCH_OUTPUT_LIMIT, PITCH_INTEGRAL_LIMIT,
+  PITCH_INTERVAL_MICROS
+);
+PID rollPID(
+  ROLL_P, ROLL_I, ROLL_D, ROLL_OUTPUT_LIMIT, ROLL_INTEGRAL_LIMIT,
+  ROLL_INTERVAL_MICROS
+);
+PID yawPID(
+  YAW_P, YAW_I, YAW_D, YAW_OUTPUT_LIMIT, YAW_INTEGRAL_LIMIT, YAW_INTERVAL_MICROS
+);
 
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
@@ -972,48 +1008,84 @@ Motor motorFR(45);
  */
 void setup() {
   if (VERBOSE) Serial.begin(9600);
-
+  
+  // Initialize IMU
   IMU.begin();
+  
+  // Initialize all motors
+  motorFL.begin();
   motorFR.begin();
+  motorBL.begin();
+  motorBR.begin();
+
+  // Arm all motors
+  motorFL.arm();
   motorFR.arm();
+  motorBL.arm();
+  motorBR.arm();
 
   // Non-blocking 3s arming
   uint32_t startMillis = millis();
   while (millis() - startMillis < 3000) {
-      motorFR.update();
+    motorFL.update();
+    motorFR.update();
+    motorBL.update();
+    motorBR.update();
   }
+
+  // Initialize radio
+  radio.begin();
 }
 
 /**
  * @brief Called by system every time possible.
  */
 void loop() {
-  // Read sensors
-  // Read radio
-  // Run PIDs
-  // Mix outputs -> 4 motors
-  // Write PWM
-
+  // Update sensors
   IMU.update();
-  motorFR.update();
+  uSensor.update();
+  radio.update();
 
-  float pitch = IMU.getPitch();
+  // Compute target angles, TODO: Replace with remote values
+  float targetPitch = 0.0f;
+  float targetRoll  = 0.0f;
+  float targetYaw   = 0.0f; // Use +add so heading doesn't reset when stick does
 
-  long maxPitch = 10.0;
-  int us = map(max(0, pitch), 0, maxPitch, 1600, 2000);
+  // Grab spacial orientation
+  float measuredPitch = IMU.getPitch();
+  float measuredRoll  = IMU.getRoll();
+  float measuredYaw   = IMU.getYaw();
 
-  Serial.println(pitch);
+  // Compute corrections
+  float pitchCorrection = pitchPID.update(targetPitch, measuredPitch);
+  float rollCorrection  = rollPID.update(targetRoll, measuredRoll);
+  float yawCorrection   = yawPID.update(targetYaw, measuredYaw);
 
-  motorFR.setPulseWidth(us);
+  // Base throttle to stay hovering
+  float baseThrottle = 1500.0f; // TODO Tune to exact hover
+
+  // Update motor mix
+  motorMix.update(baseThrottle, rollCorrection, pitchCorrection, yawCorrection);
+
+  // Debug loggin
+  if (VERBOSE) {
+    Serial.print(F("Pitch: "));
+    Serial.print(measuredPitch);
+    Serial.print(F(" | Roll: "));
+    Serial.print(measuredRoll);
+    Serial.print(F(" | Yaw: "));
+    Serial.println(measuredYaw);
+  }
 }
 
-// ========================================================================== //
-// MAIN FUNCTIONS                                                             //
-// ========================================================================== //
+/*
+IMU: 
+ - Mount this shit as close to center of mass.
+ - It has to have horizontal reading of pitch=0 and roll=0 to ensure NO bias.
 
-
-
-// ========================================================================== //
-// HELPER FUNCTIONS                                                           //
-// ========================================================================== //
-
+Prop mounting should be like the following (blade must cut into the direction):
+ - Front-left  = CCW
+ - Front-right = CW
+ - Back-right  = CCW
+ - Back-left   = CW
+*/
