@@ -1089,3 +1089,15 @@ Prop mounting should be like the following (blade must cut into the direction):
  - Back-right  = CCW
  - Back-left   = CW
 */
+
+/*
+Missing features:
+  - Some way to restart motors without replugging power to arduino.
+
+  - Shutoff motors when detecting unrecoverable angle (indicate with red LED).
+  - Indicate autoland (blue LED).
+    - Ignore controls.
+    - Set target angles to 0.
+    - Throttle down slowly until reaching ground (ultrasensor reading ~ 5cm).
+    - Tween throttle to minimums, then shutoff motors.
+*/
