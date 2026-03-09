@@ -227,11 +227,15 @@ class IntervalMicros {
 /**
  * @brief Drives an ESC at 50Hz with a pulse between 1000-2000µs. Uses Timer1.
  * 
- * Pins must be either 9OC1A or OC1B pins (9 or 10), these belong to Timer1.
+ * Pins must be one of the below listed, these belong to Timer 4 & 5:
+ * - OC4A = 6
+ * - OC4B = 7
+ * - OC5A = 46
+ * - OC5B = 45
  * 
- * Bitshifting logic was found in the ATmega328P datasheet.
+ * Bitshifting logic was found in the ATmega2560 datasheet.
  * 
- * @param pin uint8_t. Which pin to drive the motor from. Choose either 9 or 10.
+ * @param pin uint8_t. Which pin to drive the motor from. Not all pins work.
  */
 class Motor {
   public:
@@ -239,22 +243,21 @@ class Motor {
       : pin(pin), pulseMicros(1000), targetPulse(1000), armed(false)
     {}
 
-    bool timer5Initialized = false;
-
     /**
-     * @brief Sets pin modes and configures Timer1 to output PWM at 50Hz. UPDATE DOCSTRING TO REFLECT MEGA
+     * @brief Sets pin modes and configures Timer to output PWM at 50Hz.
      * 
      * When configuring the timer, it clears the registers responsible for:
      * A. TCCR1A = COM & PWM mode bits.
      * B. TCCR1B = WGM & Prescaler.
      * 
-     * It then recognizes which pin is being used (9 or 10) and sets the pin to
-     * non-inverting PWM. After it defines how the timer counts and generates
-     * PWM, which is on fast mode.
+     * It then recognizes which pin is being used and sets the pin to
+     * non-inverting PWM. After that, it defines how the timer counts and
+     * generates PWM, which is on fast mode.
      * 
      * Next, it sets the prescaler, which is resposible for dividing the main
      * clock (16MHz on an Arduino Uno) to slow down the timer. After this it
      * sets the ICR1 (Input Capture Register) to 40k, this is the top value.
+     * 
      * The PWM frequency is calculated: F_CPU / (Prescaler * 40k) ~= 50Hz. With
      * filled values: 16MHz / (8 * 40,000) ~= 50Hz. This is the standard ESC
      * update rate needed to drive the motor.
@@ -266,32 +269,10 @@ class Motor {
       // Clear interrupts.
       cli();
 
-      if(pin == 46 || pin == 45){
-
-          if(!timer5Initialized){
-
-              TCCR5A = 0;
-              TCCR5B = 0;
-
-              TCCR5A |= (1<<WGM51);
-              TCCR5B |= (1<<WGM52) | (1<<WGM53);
-
-              TCCR5B |= (1<<CS51);   // prescaler 8
-
-              ICR5 = 40000;          // 20ms period
-
-              timer5Initialized = true;
-          }
-
-          if(pin == 46){
-              channel = Channel::OC5A;
-              TCCR5A |= (1<<COM5A1);
-          }
-
-          if(pin == 45){
-              channel = Channel::OC5B;
-              TCCR5A |= (1<<COM5B1);
-          }
+      // Initialize if not
+      if (setupTimerForPin(pin) == false) {
+        sei();
+        return;
       }
 
       // Set initial pulse and interrupts.
@@ -311,7 +292,7 @@ class Motor {
       targetPulse = 1000;
       armed = true;
       armEndMillis = millis() + armTimeMs;
-      updateTimerOutput(); // Immediately update OCR1A/OCR1B
+      updateTimerOutput(); // Immediately update output compares
     }
     
     /**
@@ -322,7 +303,7 @@ class Motor {
     void setPulseWidth(uint16_t us) {
       targetPulse = constrain(us, 1000, 2000);
     }
-    
+
     /**
      * @brief Call every update, only runs if motor is armed.
      * 
@@ -331,15 +312,20 @@ class Motor {
     void update() {
       if (!armed) return;
 
+      // Make sure it's done arming
       if (millis() > armEndMillis) {
         if      (pulseMicros < targetPulse) pulseMicros++;
         else if (pulseMicros > targetPulse) pulseMicros--;
+
         updateTimerOutput();
       }
     }
 
   private:
-    enum class Channel { OC1A, OC1B, OC5A, OC5B };
+    enum class Timer { T4, T5 };
+    enum class Channel { A, B };
+
+    Timer timer;
     Channel channel;
 
     uint8_t pin;
@@ -349,29 +335,120 @@ class Motor {
     
     bool armed;
     uint32_t armEndMillis;
-    
+
+    static bool timer4Initialized = false;
+    static bool timer5Initialized = false;
+
+    /**
+     * @brief Sets the Timer identifications based on the pin, then initializes
+     * the timer and attaches the channel.
+     * 
+     * @param pin uint8_t. Pin to setup.
+     */
+    void setupTimerForPin(uint8_t pin) {
+      switch (pin) {
+        case 6:
+          timer   = Timer::T4;
+          channel = Channel::A;
+          break;
+
+        case 7:
+          timer   = Timer::T4;
+          channel = Channel::B;
+          break;
+
+        case 46:
+          timer   = Timer::T5;
+          channel = Channel::A;
+          break;
+
+        case 45:
+          timer   = Timer::T5;
+          channel = Channel::B;
+          break;
+
+        default:
+          return false;
+      }
+
+      initTimer();
+      attachChannel();
+      
+      return true;
+    }
+
+    /**
+     * @brief .
+     */
+    void initTimer() {
+      switch (timer) {
+        case Timer::T4:
+          if (!timer4Initialized) {
+            TCCR4A = 0;
+            TCCR4B = 0;
+  
+            TCCR4A |= (1 << WGM41);
+            TCCR4B |= (1 << WGM42) | (1 << WGM43);
+  
+            TCCR4B |= (1 << CS41);
+  
+            ICR4 = 40000;
+
+            timer4Initialized = true;
+          }
+          break;
+        
+        case Timer::T5:
+          if (!timer5Initialized) {
+            TCCR5A = 0;
+            TCCR5B = 0;
+  
+            TCCR5A |= (1 << WGM51);
+            TCCR5B |= (1 << WGM52) | (1 << WGM53);
+  
+            TCCR5B |= (1 << CS51);
+  
+            ICR5 = 40000;
+
+            timer5Initialized = true;
+          }
+          break;
+      }
+    }
+
+    /**
+     * @brief .
+     */
+    void attachChannel() {
+      switch (timer) {
+        case Timer::T4:
+          if      (channel == Channel::A) TCCR4A |= (1 << COM4A1);
+          else if (channel == Channel::B) TCCR4A |= (1 << COM4B1);
+          break;
+
+        case Timer::T5:
+          if      (channel == Channel::A) TCCR5A |= (1 << COM5A1);
+          else if (channel == Channel::B) TCCR5A |= (1 << COM5B1);
+          break;
+      }
+    }
+
     /**
      * @brief Converts microseconds to timer ticks and sets compare register.
      */
     void updateTimerOutput() {
       uint16_t ticks = pulseMicros * 2;
       
-      switch(channel){
-        case Channel::OC1A:
-            OCR1A = ticks;
-            break;
+      switch (timer) {
+        case Timer::T4:
+          if      (channel == Channel::A) TCCR4A |= (1 << COM4A1);
+          else if (channel == Channel::B) TCCR4A |= (1 << COM4B1);
+          break;
 
-        case Channel::OC1B:
-            OCR1B = ticks;
-            break;
-
-        case Channel::OC5A:
-            OCR5A = ticks;
-            break;
-
-        case Channel::OC5B:
-            OCR5B = ticks;
-            break;
+        case Timer::T5:
+          if      (channel == Channel::A) TCCR5A |= (1 << COM5A1);
+          else if (channel == Channel::B) TCCR5A |= (1 << COM5B1);
+          break;
       }
     }
 };
@@ -858,6 +935,10 @@ class MotorMix {
 // ========================================================================== //
 // CLASS INSTANTIATION                                                        //
 // ========================================================================== //
+
+// Allocate memory for motor timer flags
+bool Motor::timer4Initialized = false;
+bool Motor::timer5Initialized = false;
 
 // Mount this shit as close to center of mass.
 // It has to have horizontal reading of pitch=0 and roll=0 to ensure NO bias.
