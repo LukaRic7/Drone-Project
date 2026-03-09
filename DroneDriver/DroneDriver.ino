@@ -239,8 +239,10 @@ class Motor {
       : pin(pin), pulseMicros(1000), targetPulse(1000), armed(false)
     {}
 
+    bool timer5Initialized = false;
+
     /**
-     * @brief Sets pin modes and configures Timer1 to output PWM at 50Hz.
+     * @brief Sets pin modes and configures Timer1 to output PWM at 50Hz. UPDATE DOCSTRING TO REFLECT MEGA
      * 
      * When configuring the timer, it clears the registers responsible for:
      * A. TCCR1A = COM & PWM mode bits.
@@ -264,23 +266,33 @@ class Motor {
       // Clear interrupts.
       cli();
 
-      // Clear timer counter 1 control register A & B
-      TCCR1A = 0; // Compare Output Mode (COM) & PWM mode bits
-      TCCR1B = 0; // Waveform Generation Mode (WGM) & Prescaler
+      if(pin == 46 || pin == 45){
 
-      // Recognize pin
-      if (pin == 9) TCCR1A |= (1 << COM1A1);
-      else          TCCR1A |= (1 << COM1B1);
+          if(!timer5Initialized){
 
-      // Fast PWM, TOP = ICR1
-      TCCR1A |= (1 << WGM11);
-      TCCR1B |= (1 << WGM13) | (1 << WGM12);
+              TCCR5A = 0;
+              TCCR5B = 0;
 
-      // Prescaler = 8
-      TCCR1B |= (1 << CS11);
+              TCCR5A |= (1<<WGM51);
+              TCCR5B |= (1<<WGM52) | (1<<WGM53);
 
-      // 50Hz period
-      ICR1 = 40000;
+              TCCR5B |= (1<<CS51);   // prescaler 8
+
+              ICR5 = 40000;          // 20ms period
+
+              timer5Initialized = true;
+          }
+
+          if(pin == 46){
+              channel = Channel::OC5A;
+              TCCR5A |= (1<<COM5A1);
+          }
+
+          if(pin == 45){
+              channel = Channel::OC5B;
+              TCCR5A |= (1<<COM5B1);
+          }
+      }
 
       // Set initial pulse and interrupts.
       updateTimerOutput();
@@ -327,6 +339,9 @@ class Motor {
     }
 
   private:
+    enum class Channel { OC1A, OC1B, OC5A, OC5B };
+    Channel channel;
+
     uint8_t pin;
 
     uint16_t pulseMicros;
@@ -340,8 +355,24 @@ class Motor {
      */
     void updateTimerOutput() {
       uint16_t ticks = pulseMicros * 2;
-      if      (pin == 9)  OCR1A = ticks;
-      else if (pin == 10) OCR1B = ticks;
+      
+      switch(channel){
+        case Channel::OC1A:
+            OCR1A = ticks;
+            break;
+
+        case Channel::OC1B:
+            OCR1B = ticks;
+            break;
+
+        case Channel::OC5A:
+            OCR5A = ticks;
+            break;
+
+        case Channel::OC5B:
+            OCR5B = ticks;
+            break;
+      }
     }
 };
 
@@ -840,7 +871,7 @@ InertialUnit IMU(1000);
   Back-right  = CCW
   Back-left   = CW
 */
-Motor motorFR(9); // Pin 9 for OC1A (Output Compare 1 <Channel> A)
+Motor motorFR(45); // Pin 9 for OC1A (Output Compare 1 <Channel> A)
 
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
@@ -880,6 +911,8 @@ void loop() {
 
   long maxPitch = 10.0;
   int us = map(max(0, pitch), 0, maxPitch, 1600, 2000);
+
+  Serial.println(pitch);
 
   motorFR.setPulseWidth(us);
 }
