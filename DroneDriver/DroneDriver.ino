@@ -361,6 +361,9 @@ class Motor {
      * the timer and attaches the channel.
      * 
      * @param pin uint8_t. Pin to setup.
+     * 
+     * @return bool. 
+     * @return bool. If otherwise.
      */
     bool setupTimerForPin(uint8_t pin) {
       switch (pin) {
@@ -1034,7 +1037,7 @@ void setup() {
   }
 
   // Initialize radio
-  radio.begin();
+  //radio.begin();
 }
 
 /**
@@ -1042,10 +1045,13 @@ void setup() {
  */
 void loop() {
   // Update sensors
-  IMU.update();
-  uSensor.update();
-  radio.update();
-
+  //IMU.update();
+  //uSensor.update();
+  //radio.update();
+  
+  motorBL.setPulseWidth(1600);
+  motorBL.update();
+  /*
   // Compute target angles, TODO: Replace with remote values
   float targetPitch = 0.0f;
   float targetRoll  = 0.0f;
@@ -1076,6 +1082,7 @@ void loop() {
     Serial.print(F(" | Yaw: "));
     Serial.println(measuredYaw);
   }
+  */
 }
 
 /*
@@ -1083,7 +1090,7 @@ IMU:
  - Mount this shit as close to center of mass.
  - It has to have horizontal reading of pitch=0 and roll=0 to ensure NO bias.
 
-Prop mounting should be like the following (blade must cut into the direction):
+Prop mounting should be like the following:
  - Front-left  = CCW
  - Front-right = CW
  - Back-right  = CCW
