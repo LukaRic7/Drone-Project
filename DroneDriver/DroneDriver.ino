@@ -600,12 +600,12 @@ class InertialUnit {
     /**
      * @brief Get the roll value in degrees.
      */
-    float getRoll() const { return roll; };
+    float getRoll() const { return roll; }
     
     /**
      * @brief Get the pitch value in degrees.
      */
-    float getPitch() const { return pitch; };
+    float getPitch() const { return pitch; }
     
     /**
      * @brief Get the yaw value in degrees.
@@ -613,7 +613,7 @@ class InertialUnit {
      * World physics causes it to drift over short time, don't use for
      * important things, unreliable!
      */
-    float getYaw() const { return yaw; };
+    float getYaw() const { return yaw; }
 
   private:
     uint8_t mpu_address;
@@ -959,6 +959,111 @@ class MotorMix {
 
   private:
     Motor* motors[4];
+};
+
+/**
+ * @brief Reads voltage limits from a LiPo S3 battery.
+ * 
+ * Makes sure the battery connected is within safe limits, and calulcates the
+ * percent of safe charge left.
+ * 
+ * Make sure you do not connect the 4th pin to the Arduino as it will fry the
+ * pin. The 4th pin is all cells together so, you get full voltage. Make sure
+ * each pin only gets a maximum of 5V.
+ * 
+ * @param cell1Pin uint8_t. The analog pin the first cell is connected to.
+ * @param cell2Pin uint8_t. The analog pin the second cell is connected to.
+ * @param cell3Pin uint8_t. The analog pin the third cell is connected to.
+ */
+class BatteryManagement {
+  public:
+    BatteryManagement(uint8_t cell1Pin, uint8_t cell2Pin, uint8_t cell3Pin,
+                      uint32_t intervalMicros=1000000)
+      : cell1(cell1Pin), cell2(cell2Pin), cell3(cell3Pin), timer(intervalMicros)
+    {}
+  
+    /**
+     * @brief Call this every update. Reads individual cell pins, and calculates
+     * the voltage on each cell.
+     */
+    void update() {
+      if (timer.ready()) {
+        // Read cells
+        int rawC1 = analogRead(cell1);
+        int rawC2 = analogRead(cell2);
+        int rawC3 = analogRead(cell3);
+
+        // Convert to voltage at pin
+        float V_C1 = rawC1 * (5 / 1023.0f);
+        float V_C2 = rawC2 * (5 / 1023.0f);
+        float V_C3 = rawC3 * (5 / 1023.0f);
+        
+        // Calculate cell voltages
+        charge1 = V_C1;
+        charge2 = V_C2 - V_C1;
+        charge3 = V_C3 - V_C2;
+      }
+    }
+
+    /**
+     * @brief Easy way to see if the battery is safe to draw from.
+     * 
+     * @param minPct float. The minimum percent that is considered safe,
+     * defaults to 0.1
+     * 
+     * @return bool. True if it's safe to draw power from.
+     * @return bool. False otherwise.
+     */
+    bool isSafe(float minPct=0.1f) {
+      return getBatteryCharge() > minPct;
+    }
+
+    /**
+     * @brief Get the percent of charge left in cell 1.
+     */
+    float getChargeCell1() const { return convertV2Pct(charge1); }
+
+    /**
+     * @brief Get the percent of charge left in cell 2.
+     */
+    float getChargeCell2() const { return convertV2Pct(charge2); }
+
+    /**
+     * @brief Get the percent of charge left in cell 3.
+     */
+    float getChargeCell3() const { return convertV2Pct(charge3); }
+
+    /**
+     * @brief Get the total battery charge percentage left.
+     */
+    float getBatteryCharge() const {
+      return convertV2Pct(charge1 + charge2 + charge3, 12.6f, 9.6f);
+    }
+
+  private:
+    uint8_t cell1, cell2, cell3;
+
+    float charge1, charge2, charge3;
+
+    IntervalMicros timer;
+
+    /**
+     * @brief Get the measured battery charge by measured voltage.
+     * 
+     * Tuned to a S3 LiPo battery cell!
+     * 
+     * @param measuredV float. Measured voltage (eg. using a multimeter).
+     * @param fullV float. The voltage when fully charged. Defaults
+     * to 12.6V.
+     * @param emptyV float. Voltage when the battery cell is empty. This should
+     * be the absolute lowest, discharging below this will permanently damage
+     * the battery.
+     * 
+     * @return float. 0 - 1 range of the calculated battery cell charge left.
+     */
+    float convertV2Pct(float measuredV, float fullV=4.2, float emptyV=3.2) {
+        return constrain((measuredV - emptyV) / (fullV - emptyV), 0.0f, 1.0f);
+    }
 };
 
 // ========================================================================== //
