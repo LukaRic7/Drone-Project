@@ -649,7 +649,8 @@ class Radio {
      * @brief Initialize the RadioHead driver.
      */
     void begin() {
-      driver.init();
+      if (!driver.init())
+        Serial.println("Failed to initialize radio driver!");
     }
 
     /**
@@ -664,6 +665,7 @@ class Radio {
 
       // Read if theres a packet ready
       if (driver.recv(buffer, &length) && length == 5) {
+        Serial.println(length);
         if (rxPacket.decode(buffer)) {
           signal = true;
           lastRxTime = millis();
@@ -671,7 +673,7 @@ class Radio {
       }
 
       // Check if the radio lost signal to the transmitter
-      if (millis() - lastRxTime > 100) {
+      if (millis() - lastRxTime > 500) {
         signal = false;
       }
     }
@@ -1037,7 +1039,7 @@ void setup() {
   }
 
   // Initialize radio
-  //radio.begin();
+  radio.begin();
 }
 
 /**
@@ -1047,10 +1049,20 @@ void loop() {
   // Update sensors
   //IMU.update();
   //uSensor.update();
-  //radio.update();
+  radio.update();
+
+  RemotePacket packet = radio.getRxPacket();
+  Serial.print("Pitch: ");
+  Serial.print(packet.pitch);
+  Serial.print(" | Roll: ");
+  Serial.print(packet.roll);
+  Serial.print(" | ");
+  Serial.println(radio.hasSignal() ? "SIGNAL" : "NO SIGNAL");
+  /*
+  */
   
-  motorBL.setPulseWidth(1600);
-  motorBL.update();
+  //motorBL.setPulseWidth(1600);
+  //motorBL.update();
   /*
   // Compute target angles, TODO: Replace with remote values
   float targetPitch = 0.0f;
