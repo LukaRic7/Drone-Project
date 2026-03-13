@@ -32,8 +32,13 @@
 // CONFIGURATION                                                              //
 // ========================================================================== //
 
-// Verbose messages, used when debugging. Ensure evaulation at compile-time.
-constexpr bool VERBOSE = true;
+// Debug logging, ensure only one toggled at once to avoid console clutter.
+constexpr bool DEBUG_MAIN       = false; // Main information out
+constexpr bool DEBUG_IMU        = false;
+constexpr bool DEBUG_RADIO      = false;
+constexpr bool DEBUG_MOTOR      = false;
+constexpr bool DEBUG_USENSOR    = false;
+constexpr bool DEBUG_BATTERY    = false;
 
 // Timings
 constexpr int INERTIAL_INTERVAL_MICROS = 1000;
@@ -76,6 +81,15 @@ constexpr uint8_t MOTOR_BL = 7;
 // Ultrasonic pins
 constexpr uint8_t USENSOR_TRIGGER = 3;
 constexpr uint8_t USENSOR_ECHO    = 4;
+
+// Indicator LEDs
+constexpr uint8_t ERROR_LED_PIN   = 8;
+constexpr uint8_t WARNING_LED_PIN = 9;
+
+// Battery cell pins
+constexpr uint8_t BATTERY_CELL_1 = 10;
+constexpr uint8_t BATTERY_CELL_2 = 11;
+constexpr uint8_t BATTERY_CELL_3 = 12;
 
 // ========================================================================== //
 // ENUMS / STRUCTS                                                            //
@@ -333,6 +347,13 @@ class Motor {
       if (millis() > armEndMillis) {
         if      (pulseMicros < targetPulse) pulseMicros++;
         else if (pulseMicros > targetPulse) pulseMicros--;
+
+        // Debug logging
+        if (DEBUG_MOTOR) {
+          Serial.print(F("Pulse length: "));
+          Serial.print(pulseMicros);
+          Serial.println(F(" us"));
+        }
 
         updateTimerOutput();
       }
@@ -595,6 +616,16 @@ class InertialUnit {
       // Calculate the pitch and roll angle
       roll  = alphaFilter * roll  + (1 - alphaFilter) * rollAcc;
       pitch = alphaFilter * pitch + (1 - alphaFilter) * pitchAcc;
+
+      // Debug logging
+      if (DEBUG_IMU) {
+        Serial.print(F("Pitch: "));
+        Serial.print(pitch);
+        Serial.print(F(" | Roll: "));
+        Serial.print(roll);
+        Serial.print(F(" | Yaw: "));
+        Serial.println(yaw);
+      }
     }
 
     /**
@@ -649,7 +680,7 @@ class Radio {
      * @brief Initialize the RadioHead driver.
      */
     void begin() {
-      if (!driver.init())
+      if (!driver.init() && DEBUG_RADIO)
         Serial.println("Failed to initialize radio driver!");
     }
 
@@ -665,10 +696,25 @@ class Radio {
 
       // Read if theres a packet ready
       if (driver.recv(buffer, &length) && length == 5) {
-        Serial.println(length);
         if (rxPacket.decode(buffer)) {
           signal = true;
           lastRxTime = millis();
+
+          // Debug logging
+          if (DEBUG_RADIO) {
+            Serial.print(F("Signal: "));
+            Serial.print(signal ? "YES" : "NO");
+            Serial.print(F(" | Pitch: "));
+            Serial.print(rxPacket.pitch);
+            Serial.print(F(" | Roll: "));
+            Serial.print(rxPacket.roll);
+            Serial.print(F(" | Yaw: "));
+            Serial.print(rxPacket.yaw);
+            Serial.print(F(" | Throttle: "));
+            Serial.print(rxPacket.throttle);
+            Serial.print(F(" | Autoland: "));
+            Serial.println(rxPacket.autoland);
+          } 
         }
       }
 
@@ -689,6 +735,22 @@ class Radio {
      */
     void send(const RemotePacket& packet) {
       packet.encode(buffer);
+
+      // Debug logging
+      if (DEBUG_RADIO) {
+        Serial.print(F("Pitch: "));
+        Serial.print(packet.pitch);
+        Serial.print(F(" | Roll: "));
+        Serial.print(packet.roll);
+        Serial.print(F(" | Yaw: "));
+        Serial.print(packet.yaw);
+        Serial.print(F(" | Throttle: "));
+        Serial.print(packet.throttle);
+        Serial.print(F(" | Autoland: "));
+        Serial.println(packet.autoland);
+      }
+
+      // Send packet
       driver.send(buffer, sizeof(buffer));
       driver.waitPacketSent();
     }
@@ -797,6 +859,14 @@ class UltrasonicSensor {
           if (digitalRead(echo) == LOW) {
             unsigned long duration = micros() - pulseStart;
             distanceCm = duration * 0.034 / 2;
+
+            // Debug logging
+            if (DEBUG_USENSOR) {
+              Serial.print(F("Distance: "));
+              Serial.print(distanceCm);
+              Serial.println(F(" cm"));
+            }
+
             state = State::IDLE;
           }
           break;
@@ -928,7 +998,7 @@ class PID {
  */
 class MotorMix {
   public:
-    MotorMix(Motor* m1, Motor* m2, Motor* m3, Motor* m4) : motors{m1, m2, m3, m4} {}
+    MotorMix(Motor& m1, Motor& m2, Motor& m3, Motor& m4) : motors{m1, m2, m3, m4} {}
   
     /**
      * @brief Call to update the ESC values. Mixes inputs to run the quadcopter
@@ -951,16 +1021,16 @@ class MotorMix {
       // Write to motor ESCs
       for (int i=0; i<4; ++i) {
         m[i] = constrain(m[i], 1000, 2000); // µs width max size
-        motors[i]->setPulseWidth(m[i]);
+        motors[i].setPulseWidth(m[i]);
       }
 
       // Call update on each motor
       for (int i=0; i<4; ++i)
-        motors[i]->update();
+        motors[i].update();
     }
 
   private:
-    Motor* motors[4];
+    Motor& motors[4];
 };
 
 /**
@@ -1004,6 +1074,17 @@ class BatteryManagement {
         charge1 = V_C1;
         charge2 = V_C2 - V_C1;
         charge3 = V_C3 - V_C2;
+
+        // Debug logging
+        if (DEBUG_BATTERY) {
+          Serial.print(F("Cell 1: "));
+          Serial.print(charge1);
+          Serial.print(F("V | Cell 2: "));
+          Serial.print(charge2);
+          Serial.print(F("V | Cell 3: "));
+          Serial.print(charge3);
+          Serial.println(F("V"));
+        }
       }
     }
 
@@ -1068,6 +1149,57 @@ class BatteryManagement {
     }
 };
 
+/**
+ * @brief Central brain for the whole drone, ties together individual components.
+ *
+ * When plugging in the main battery, and the controller detects sufficient power,
+ * the drone will wait 5 seconds before initializing arming so theres time to get
+ * away from the spinning propellers.
+ *
+ * Onboard indicator LEDs meaning:
+ * - Error LED static: Drone entered crash protection mode, restart needed.
+ * - Error LED blinking: Critically low battery detected, wont power on.
+ * - Warning LED blinking: Signal lost from remote control OR arming drone.
+ * - Warning LED static: Landing mode active
+ */
+class FlightController {
+  public:
+    FlightController(Radio& radio, InertialUnit& imu, UltrasonicSensor& uSensor
+                     BatteryManagement& battery, PID& pitchPID, PID& rollPID,
+                     PID& yawPID, MotorMix& motorMix, uint8_t errorPin,
+                     uint8_t warningPin)
+    {}
+
+    /**
+     * @brief .
+     */
+    void begin() {
+
+    }
+
+    /**
+     * @brief .
+     */
+    void update() {
+
+    }
+
+    /**
+     * @brief .
+     */
+    void setTargets(float pitch, float roll, float yaw, float throttle) {
+
+    }
+
+  private:
+    enum class FlightState {
+      DISARMED, ARMING, FLYING, AUTO_LAND, CRASH, NO_BATTERY
+    };
+    FlightState state;
+
+    uint8_t targetPitch, targetRoll, targetYaw, targetThrottle;
+}
+
 // ========================================================================== //
 // CLASS INSTANTIATION                                                        //
 // ========================================================================== //
@@ -1109,6 +1241,15 @@ PID yawPID(
   YAW_P, YAW_I, YAW_D, YAW_OUTPUT_LIMIT, YAW_INTEGRAL_LIMIT, YAW_INTERVAL_MICROS
 );
 
+// Instantiate the battery manager
+BatteryManagement battery(BATTERY_CELL_1, BATTERY_CELL_2, BATTERY_CELL_3);
+
+// Instantiate the flight controller
+FlightController flightController(
+  radio, IMU, uSensor, battery, pitchPID, rollPID, yawPID, motorMix,
+  ERROR_LED_PIN, WARNING_LED_PIN
+);
+
 // ========================================================================== //
 // LIFECYCLE FUNCTIONS                                                        //
 // ========================================================================== //
@@ -1117,8 +1258,15 @@ PID yawPID(
  * @brief Called by system at the startup once.
  */
 void setup() {
-  if (VERBOSE) Serial.begin(9600);
+  // Debug initialization
+  if (DEBUG_MAIN || DEBUG_IMU || DEBUG_RADIO || DEBUG_MOTOR || DEBUG_USENSOR
+      || DEBUG_BATTERY) {
+        Serial.begin(9600);
+  }
   
+  flightController.begin();
+
+  /*
   // Initialize IMU
   IMU.begin();
   
@@ -1127,13 +1275,13 @@ void setup() {
   motorFR.begin();
   motorBL.begin();
   motorBR.begin();
-
+  
   // Arm all motors
   motorFL.arm();
   motorFR.arm();
   motorBL.arm();
   motorBR.arm();
-
+  
   // Non-blocking 3s arming
   uint32_t startMillis = millis();
   while (millis() - startMillis < 3000) {
@@ -1142,15 +1290,19 @@ void setup() {
     motorBL.update();
     motorBR.update();
   }
-
+  
   // Initialize radio
   radio.begin();
+  */
 }
 
 /**
  * @brief Called by system every time possible.
  */
 void loop() {
+  flightController.update();
+
+  /*
   // Update sensors
   //IMU.update();
   //uSensor.update();
@@ -1163,7 +1315,6 @@ void loop() {
   Serial.print(packet.roll);
   Serial.print(" | ");
   Serial.println(radio.hasSignal() ? "SIGNAL" : "NO SIGNAL");
-  /*
   */
   
   //motorBL.setPulseWidth(1600);
