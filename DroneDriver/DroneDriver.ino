@@ -247,6 +247,8 @@ class IntervalMicros {
 
     /**
      * @brief Get the currently used interval.
+     *
+     * @return uint32_t. Current interval in use.
      */
     uint32_t getInterval() const { return interval; }
 
@@ -639,11 +641,15 @@ class InertialUnit {
 
     /**
      * @brief Get the roll value in degrees.
+     *
+     * @return float. Measured roll.
      */
     float getRoll() const { return roll; }
     
     /**
      * @brief Get the pitch value in degrees.
+     *
+     * @return float. Measured pitch.
      */
     float getPitch() const { return pitch; }
     
@@ -652,6 +658,8 @@ class InertialUnit {
      * 
      * World physics causes it to drift over short time, don't use for
      * important things, unreliable!
+     *
+     * @return float. Measured yaw.
      */
     float getYaw() const { return yaw; }
 
@@ -776,6 +784,9 @@ class Radio {
 
     /**
      * @brief Exposes the packet, read-only access.
+     *
+     * @return RemotePacket&. Reference to the decoded packet containing
+     * the newest values available.
      */
     const RemotePacket& getRxPacket() const { return rxPacket; }
   
@@ -1136,21 +1147,29 @@ class BatteryManagement {
 
     /**
      * @brief Get the percent of charge left in cell 1.
+     *
+     * @return float. Charge left in cell, range values from 0-1.
      */
     float getChargeCell1() const { return convertV2Pct(charge1); }
 
     /**
      * @brief Get the percent of charge left in cell 2.
+     *
+     * @return float. Charge left in cell, range values from 0-1.
      */
     float getChargeCell2() const { return convertV2Pct(charge2); }
 
     /**
      * @brief Get the percent of charge left in cell 3.
+     *
+     * @return float. Charge left in cell, range values from 0-1.
      */
     float getChargeCell3() const { return convertV2Pct(charge3); }
 
     /**
      * @brief Get the total battery charge percentage left.
+     *
+     * @return float. Charge left in battery, value ranges from 0-1.
      */
     float getBatteryCharge() const {
       return convertV2Pct(charge1 + charge2 + charge3, 12.6f, 9.6f);
@@ -1225,6 +1244,15 @@ class LED {
   }
 
   /**
+   * @brief Get the light state of the LED.
+   *
+   * @return uint8_t. 0 = off, 1 = on, 2 = blinking
+   */
+  uint8_t getState() {
+    return blinking ? 2 : state;
+  }
+
+  /**
    * @brief Blink the LED at a specified rate.
    *
    * @param rateMs uint32_t. Rate to blink at in milliseconds.
@@ -1265,16 +1293,13 @@ class FlightController {
         pitchPID(pitchPID), rollPID(rollPID), yawPID(yawPID),
         motorMix(motorMix), errorLED(errorPin), warningLED(warningPin),
         targetPitch(0), targetRoll(0), targetYaw(0), targetThrottle(0),
-        armingStart(0)
+        armingStart(0), strState("NONE")
     {}
 
     /**
      * @brief Arm the motors, and reset the PID controllers.
      */
     void begin() {
-      if (DEBUG_MAIN)
-        Serial.println("Starting flight controller...");
-      
       // Initialize sensors
       imu.begin();
       radio.begin();
@@ -1286,6 +1311,9 @@ class FlightController {
 
       state = FlightState::ARMING;
       armingStart = millis();
+
+      if (DEBUG_MAIN)
+        Serial.println("Started flight controller!");
     }
 
     /**
@@ -1297,37 +1325,97 @@ class FlightController {
       uSensor.update();
       radio.update();
       battery.update();
+      errorLED.update();
+      warningLED.update();
 
-      RemotePacket packet = radio.getRxPacket();
+      RemotePacket packet = radio.getRxPacket(); // TODO, remember that pitch etc are 0-31, split half, so 16 = 0 pitch target.
 
       // Safety check battery
       if (!battery.isSafe()) {
         state = FlightState::NO_BATTERY;
       }
 
+      // Check if the drone has remote signal
+      bool remoteSignal = radio.hasSignal();
+      if (!remoteSignal && warningLED.getState() == 0) // Don't overrule landing indicator
+        warningLED.blink(250);
+
+      // Extract IMU values
+      float pitch = imu.getPitch();
+      float roll  = imu.getRoll();
+      float yaw   = imu.getYaw();
+
+      // Log battery
+      if (DEBUG_MAIN) {
+        Serial.print(F("Battery: "));
+        Serial.print(battery.getBatteryCharge() * 100);
+        Serial.print(F("% | State: "));
+        Serial.print(strState);
+        Serial.print(F(" | Pitch: "));
+        Serial.print(packet.pitch);
+        Serial.print(F("/"));
+        Serial.print(pitch);
+        Serial.print(F(" | Roll: "));
+        Serial.print(packet.roll);
+        Serial.print(F("/"));
+        Serial.print(roll);
+        Serial.print(F(" | Yaw: "));
+        Serial.print(packet.yaw);
+        Serial.print(F("/"));
+        Serial.print(yaw);
+      }
+
       // State machine
       switch (state) {
         case FlightState::ARMING:
+          strState = "ARMING";
+          if (warningLED.getState() == 2) break;
+
+          warningLED.blink(250);
           break;
 
         case FlightState::FLYING:
+          strState = "FLYING";
+          updateFlight();
           break;
 
         case FlightState::AUTO_LAND:
+          strState = "AUTO_LAND";
+          if (warningLED.getState() == 1) break;
+
+          warningLED.on();
+          performAutoLand();
           break;
 
         case FlightState::CRASH:
+          strState = "CRASH";
+          if (errorLED.getState() == 1) break;
+
+          errorLED.on();
+          motorMix.disarm();
           break;
 
         case FlightState::NO_BATTERY:
+          strState = "NO_BATTERY";
+          if (errorLED.getState() == 2) break;
+
           errorLED.blink(250);
           motorMix.disarm();
           break;
       }
+
+      Serial.println(F(""));
     }
 
     /**
      * @brief Update the target pitch, roll, yaw and throttle of the drone.
+     *
+     * All parameters except throttle are expected to be in units of degrees.
+     *
+     * @param pitch float. Target pitch.
+     * @param roll float. Target roll.
+     * @param yaw float. Target yaw.
+     * @param throttle float. Target throttle, value between 1000-2000µs.
      */
     void setTargets(float pitch, float roll, float yaw, float throttle) {
       targetPitch     = pitch;
@@ -1349,6 +1437,8 @@ class FlightController {
     PID& yawPID;
     MotorMix& motorMix;
     LED warningLED, errorLED;
+
+    String strState;
 
     float armingStart;
 
