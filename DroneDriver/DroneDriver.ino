@@ -33,7 +33,7 @@
 // ========================================================================== //
 
 // Debug logging, ensure only one toggled at once to avoid console clutter.
-constexpr bool DEBUG_MAIN       = false; // Main information out
+constexpr bool DEBUG_MAIN       = true; // Main information out
 constexpr bool DEBUG_IMU        = false;
 constexpr bool DEBUG_RADIO      = false;
 constexpr bool DEBUG_MOTOR      = false;
@@ -332,7 +332,16 @@ class Motor {
      * @param us uint16_t. Desired motor speed, usually between 1000-2000µs.
      */
     void setPulseWidth(uint16_t us) {
-      targetPulse = constrain(us, 1000, 2000);
+      targetPulse = us;
+    }
+
+    /**
+     * @brief Disarm the motor, shutting it off.
+     */
+    void disarm() {
+      armed = false;
+      pulseMicros = 0;
+      updateTimerOutput();
     }
 
     /**
@@ -998,8 +1007,32 @@ class PID {
  */
 class MotorMix {
   public:
-    MotorMix(Motor& m1, Motor& m2, Motor& m3, Motor& m4) : motors{m1, m2, m3, m4} {}
+    MotorMix(Motor* m1, Motor* m2, Motor* m3, Motor* m4) : motors{m1, m2, m3, m4} {}
   
+    /**
+     * @brief Disarm all motors, powering them down.
+     */
+    void disarm() {
+      for (int i=0; i<4; ++i) {
+        motors[i]->disarm();
+      }
+    }
+
+    /**
+     * @brief Arm all motors, takes around 3 seconds. This call is blocking.
+     */
+    void arm() {
+      for (int i=0; i<4; ++i) {
+        motors[i]->begin();
+        motors[i]->arm();
+
+        uint32_t startArmMillis = millis();
+        while (millis()  startArmMillis < 3000) { // 3 second arming
+          motors[i]->update();
+        }
+      }
+    }
+
     /**
      * @brief Call to update the ESC values. Mixes inputs to run the quadcopter
      * motors the correct way.
@@ -1021,16 +1054,16 @@ class MotorMix {
       // Write to motor ESCs
       for (int i=0; i<4; ++i) {
         m[i] = constrain(m[i], 1000, 2000); // µs width max size
-        motors[i].setPulseWidth(m[i]);
+        motors[i]->setPulseWidth(m[i]);
       }
 
       // Call update on each motor
       for (int i=0; i<4; ++i)
-        motors[i].update();
+        motors[i]->update();
     }
 
   private:
-    Motor& motors[4];
+    Motor* motors[4];
 };
 
 /**
@@ -1197,6 +1230,8 @@ class LED {
    * @param rateMs uint32_t. Rate to blink at in milliseconds.
    */
   void blink(uint32_t rateMs) {
+    if (blinking) return;
+
     blinking = true;
     timer.setInterval(rateMs * 1000);
     timer.reset();
@@ -1217,29 +1252,33 @@ class LED {
  * Onboard indicator LEDs meaning:
  * - Error LED static: Drone entered crash protection mode, restart needed.
  * - Error LED blinking: Critically low battery detected, wont power on.
- * - Warning LED blinking: Signal lost from remote control OR arming drone.
  * - Warning LED static: Landing mode active
+ * - Warning LED blinking: Signal lost from remote control OR arming drone.
  */
 class FlightController {
   public:
-    FlightController(Radio& radio, InertialUnit& imu, UltrasonicSensor& uSensor
+    FlightController(Radio& radio, InertialUnit& imu, UltrasonicSensor& uSensor,
                      BatteryManagement& battery, PID& pitchPID, PID& rollPID,
                      PID& yawPID, MotorMix& motorMix, uint8_t errorPin,
                      uint8_t warningPin)
       : radio(radio), imu(imu), uSensor(uSensor), battery(battery),
         pitchPID(pitchPID), rollPID(rollPID), yawPID(yawPID),
-        motorMix(motorMix), errorPin(errorPin), warningPin(warningPin),
-        targetPitch(0), targetRoll(0), targetYaw(0), targetThrottle(0)
-    {
-      // Set pin modes
-      pinMode(errorPin, OUTPUT);
-      pinMode(warningPin, OUTPUT);
-    }
+        motorMix(motorMix), errorLED(errorPin), warningLED(warningPin),
+        targetPitch(0), targetRoll(0), targetYaw(0), targetThrottle(0),
+        armingStart(0)
+    {}
 
     /**
-     * @brief .
+     * @brief Arm the motors, and reset the PID controllers.
      */
     void begin() {
+      if (DEBUG_MAIN)
+        Serial.println("Starting flight controller...");
+      
+      // Initialize sensors
+      imu.begin();
+      radio.begin();
+
       // Reset PID controllers
       pitchPID.reset();
       rollPID.reset();
@@ -1250,7 +1289,7 @@ class FlightController {
     }
 
     /**
-     * @brief Call every loop.
+     * @brief Call every loop. Updates state machine and all sensors.
      */
     void update() {
       // Update all sensors
@@ -1258,6 +1297,8 @@ class FlightController {
       uSensor.update();
       radio.update();
       battery.update();
+
+      RemotePacket packet = radio.getRxPacket();
 
       // Safety check battery
       if (!battery.isSafe()) {
@@ -1279,6 +1320,8 @@ class FlightController {
           break;
 
         case FlightState::NO_BATTERY:
+          errorLED.blink(250);
+          motorMix.disarm();
           break;
       }
     }
@@ -1305,8 +1348,9 @@ class FlightController {
     PID& rollPID;
     PID& yawPID;
     MotorMix& motorMix;
+    LED warningLED, errorLED;
 
-    uint8_t errorPin, warningPin;
+    float armingStart;
 
     uint8_t targetPitch, targetRoll, targetYaw, targetThrottle;
 
@@ -1323,7 +1367,7 @@ class FlightController {
     void performAutoLand() {
 
     }
-}
+};
 
 // ========================================================================== //
 // CLASS INSTANTIATION                                                        //
@@ -1390,35 +1434,6 @@ void setup() {
   }
   
   flightController.begin();
-
-  /*
-  // Initialize IMU
-  IMU.begin();
-  
-  // Initialize all motors
-  motorFL.begin();
-  motorFR.begin();
-  motorBL.begin();
-  motorBR.begin();
-  
-  // Arm all motors
-  motorFL.arm();
-  motorFR.arm();
-  motorBL.arm();
-  motorBR.arm();
-  
-  // Non-blocking 3s arming
-  uint32_t startMillis = millis();
-  while (millis() - startMillis < 3000) {
-    motorFL.update();
-    motorFR.update();
-    motorBL.update();
-    motorBR.update();
-  }
-  
-  // Initialize radio
-  radio.begin();
-  */
 }
 
 /**
@@ -1434,12 +1449,6 @@ void loop() {
   radio.update();
 
   RemotePacket packet = radio.getRxPacket();
-  Serial.print("Pitch: ");
-  Serial.print(packet.pitch);
-  Serial.print(" | Roll: ");
-  Serial.print(packet.roll);
-  Serial.print(" | ");
-  Serial.println(radio.hasSignal() ? "SIGNAL" : "NO SIGNAL");
   */
   
   //motorBL.setPulseWidth(1600);
@@ -1495,7 +1504,7 @@ Missing features:
   - Some way to restart motors without replugging power to arduino.
 
   - Shutoff motors when detecting unrecoverable angle (indicate with red LED).
-  - Indicate autoland (blue LED).
+  - Indicate autoland (blue LED). Incorp ts in the flight controller.
     - Ignore controls.
     - Set target angles to 0.
     - Throttle down slowly until reaching ground (ultrasensor reading ~ 5cm).
