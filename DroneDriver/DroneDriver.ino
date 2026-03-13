@@ -1150,11 +1150,69 @@ class BatteryManagement {
 };
 
 /**
- * @brief Central brain for the whole drone, ties together individual components.
+ * @brief Simple non-PWM led controller.
  *
- * When plugging in the main battery, and the controller detects sufficient power,
- * the drone will wait 5 seconds before initializing arming so theres time to get
- * away from the spinning propellers.
+ * @param pin uint8_t. Pin that the LED is connected to.
+ */
+class LED {
+  public:
+    LED(uint8_t pin)
+      : pin(pin), blinking(false), state(false), timer(250000)
+    {
+      // Set pin mode
+      pinMode(pin, OUTPUT);
+    }
+
+  /**
+   * @brief Call every loop. Handles blinking mode.
+   */
+  void update() {
+    if (blinking && timer.ready()) {
+      state = !state;
+      digitalWrite(pin, state ? HIGH : LOW);
+    }
+  }
+
+  /**
+   * @brief Turn on the LED.
+   */
+  void on() {
+    blinking = false;
+    state = true;
+    digitalWrite(pin, HIGH);
+  }
+
+  /**
+   * @brief Turn off the LED.
+   */
+  void off() {
+    blinking = false;
+    state = false;
+    digitalWrite(pin, LOW);
+  }
+
+  /**
+   * @brief Blink the LED at a specified rate.
+   *
+   * @param rateMs uint32_t. Rate to blink at in milliseconds.
+   */
+  void blink(uint32_t rateMs) {
+    blinking = true;
+    timer.setInterval(rateMs * 1000);
+    timer.reset();
+  }
+
+  private:
+    bool blinking;
+    bool state;
+
+    IntervalMicros timer;
+
+    uint8_t pin;
+};
+
+/**
+ * @brief Central brain for the drone, ties together individual components.
  *
  * Onboard indicator LEDs meaning:
  * - Error LED static: Drone entered crash protection mode, restart needed.
@@ -1168,36 +1226,103 @@ class FlightController {
                      BatteryManagement& battery, PID& pitchPID, PID& rollPID,
                      PID& yawPID, MotorMix& motorMix, uint8_t errorPin,
                      uint8_t warningPin)
-    {}
+      : radio(radio), imu(imu), uSensor(uSensor), battery(battery),
+        pitchPID(pitchPID), rollPID(rollPID), yawPID(yawPID),
+        motorMix(motorMix), errorPin(errorPin), warningPin(warningPin),
+        targetPitch(0), targetRoll(0), targetYaw(0), targetThrottle(0)
+    {
+      // Set pin modes
+      pinMode(errorPin, OUTPUT);
+      pinMode(warningPin, OUTPUT);
+    }
 
     /**
      * @brief .
      */
     void begin() {
+      // Reset PID controllers
+      pitchPID.reset();
+      rollPID.reset();
+      yawPID.reset();
 
+      state = FlightState::ARMING;
+      armingStart = millis();
     }
 
     /**
-     * @brief .
+     * @brief Call every loop.
      */
     void update() {
+      // Update all sensors
+      imu.update();
+      uSensor.update();
+      radio.update();
+      battery.update();
 
+      // Safety check battery
+      if (!battery.isSafe()) {
+        state = FlightState::NO_BATTERY;
+      }
+
+      // State machine
+      switch (state) {
+        case FlightState::ARMING:
+          break;
+
+        case FlightState::FLYING:
+          break;
+
+        case FlightState::AUTO_LAND:
+          break;
+
+        case FlightState::CRASH:
+          break;
+
+        case FlightState::NO_BATTERY:
+          break;
+      }
     }
 
     /**
-     * @brief .
+     * @brief Update the target pitch, roll, yaw and throttle of the drone.
      */
     void setTargets(float pitch, float roll, float yaw, float throttle) {
-
+      targetPitch     = pitch;
+      targetRoll      = roll;
+      targetYaw       = yaw;
+      targetThrottle  = throttle;
     }
 
   private:
-    enum class FlightState {
-      DISARMED, ARMING, FLYING, AUTO_LAND, CRASH, NO_BATTERY
-    };
+    enum class FlightState { ARMING, FLYING, AUTO_LAND, CRASH, NO_BATTERY };
     FlightState state;
 
+    Radio& radio;
+    InertialUnit& imu;
+    UltrasonicSensor& uSensor;
+    BatteryManagement& battery;
+    PID& pitchPID;
+    PID& rollPID;
+    PID& yawPID;
+    MotorMix& motorMix;
+
+    uint8_t errorPin, warningPin;
+
     uint8_t targetPitch, targetRoll, targetYaw, targetThrottle;
+
+    /**
+     * @brief .
+     */
+    void updateFlight() {
+
+    }
+
+    /**
+     * @brief .
+     */
+    void performAutoLand() {
+
+    }
 }
 
 // ========================================================================== //
