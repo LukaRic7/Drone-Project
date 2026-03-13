@@ -1027,7 +1027,7 @@ class MotorMix {
         motors[i]->arm();
 
         uint32_t startArmMillis = millis();
-        while (millis()  startArmMillis < 3000) { // 3 second arming
+        while (millis() - startArmMillis < 3000) { // 3 second arming
           motors[i]->update();
         }
       }
