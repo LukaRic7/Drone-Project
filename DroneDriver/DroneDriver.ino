@@ -72,12 +72,11 @@ constexpr int YAW_INTERVAL_MICROS = 15000;
 constexpr float PITCH_TOLERANCE = 20.0f;
 constexpr float ROLL_TOLERANCE  = 20.0f;
 constexpr float YAW_TOLERANCE   = 5.0f; // Incementing
-constexpr float HOVER_THROTTLE  = 1500.0f;
 constexpr float THROTTLE_RANGE  = 400.0f;
 
 // Thresholds
-constexpr CRASH_ANGLE_DEG             = 60;
-constexpr LANDING_SHUTOFF_DISTANCE_CM = 5;
+constexpr float CRASH_ANGLE_DEG             = 60.0f;
+constexpr float LANDING_SHUTOFF_DISTANCE_CM = 5.0f;
 
 // Throttles
 constexpr uint16_t HOVER_THROTTLE   = 1500;
@@ -706,7 +705,7 @@ class InertialUnit {
  */
 class Radio {
   public:
-    Radio() {}
+    Radio() : signal(false), lastRxTime(0) {}
 
     /**
      * @brief Initialize the RadioHead driver.
@@ -1026,6 +1025,8 @@ class PID {
  * m3 = t - p - r - y
  * m4 = t - p + r + y
  * 
+ * Assumes correct mouning of motors and their spin-direcitons.
+ *
  * @param m1 uint8_t. Front-left motor pin.
  * @param m2 uint8_t. Front-right motor pin.
  * @param m3 uint8_t. Back-right motor pin.
@@ -1098,9 +1099,11 @@ class MotorMix {
  * Makes sure the battery connected is within safe limits, and calulcates the
  * percent of safe charge left.
  * 
- * Make sure you do not connect the 4th pin to the Arduino as it will fry the
- * pin. The 4th pin is all cells together so, you get full voltage. Make sure
- * each pin only gets a maximum of 5V.
+ * When measuring the voltage, use an IRL voltage divider for each cell,
+ * currently, the setup is:
+ * C1 = 0   ohm.
+ * C2 = 18k ohm.
+ * C3 = 27k ohm.
  * 
  * @param cell1Pin uint8_t. The analog pin the first cell is connected to.
  * @param cell2Pin uint8_t. The analog pin the second cell is connected to.
@@ -1372,7 +1375,7 @@ class FlightController {
 
       // State machine
       switch (state) {
-        case FlightState::ARMING:
+        case FlightState::ARMING: // TODO: Never transitions to flight, update motors while arming
           strState = "ARMING";
           if (warningLED.getState() == 2) break;
 
@@ -1460,7 +1463,11 @@ class FlightController {
     float targetPitch, targetRoll, targetYaw, targetThrottle;
 
     /**
-     * @brief .
+     * @brief Updates the motor mix based on remote values and more.
+     *
+     * Using remote values it maps the target angles and throttle based on
+     * the controller configuration. It also checks for crashes and autoland
+     * status.
      */
     void updateFlight() {
       RemotePacket packet = radio.getRxPacket();
@@ -1510,21 +1517,22 @@ class FlightController {
       float rollCorr  = 0;
       float yawCorr   = 0;
 
-      if (pitchPID.ready())
+      // Update under same tick to eliminate possible oscilation
+      if (pitchPID.ready()) {  
         pitchCorr = pitchPID.update(targetPitch, pitch);
-      
-      if (rollPID.ready())
         rollCorr = rollPID.update(targetRoll, roll);
-
-      if (yawPID.ready())
         yawCorr = yawPID.update(targetYaw, yaw);
+      }
 
       // Update motors
-      motorMix.update(targetThrottle, pitchCorr, rollCOrr, yawCorr);
+      motorMix.update(targetThrottle, pitchCorr, rollCorr, yawCorr);
     }
 
     /**
-     * @brief .
+     * @brief Performs autolanding of drone. Ignoring remote control inputs.
+     *
+     * Keeping the angles at 0, 0 and unchanged yaw, it slowly decreases lift
+     * until close to the ground, at which the motors are disarmed.
      */
     void performAutoLand() {
       // Read IMU
@@ -1537,14 +1545,12 @@ class FlightController {
       float rollCorr  = 0;
       float yawCorr   = 0;
 
-      if (pitchPID.ready())
+      // Run under same tick
+      if (pitchPID.ready()) {
         pitchCorr = pitchPID.update(0, pitch);
-      
-      if (rollPID.ready())
         rollCorr = rollPID.update(0, roll);
-
-      if (yawPID.ready())
         yawCorr = yawPID.update(targetYaw, yaw);
+      }
 
       // Shut off if close to ground
       float distance = uSensor.getDistance();
@@ -1558,7 +1564,12 @@ class FlightController {
     }
 
     /**
-     * @brief .
+     * @brief Map remote control value to target +- range.
+     *
+     * @param value uint8_t. Raw value from remote.
+     * @param range uint8_t. +- range/tolerance.
+     *
+     * @return float. Mapped range.
      */
     float mapStick(uint8_t value, float range) {
       return ((float)value - 16.0f) / 16.0f * range;
