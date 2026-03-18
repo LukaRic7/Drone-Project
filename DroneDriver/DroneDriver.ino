@@ -68,6 +68,21 @@ constexpr int YAW_OUTPUT_LIMIT    = 300;
 constexpr int YAW_INTEGRAL_LIMIT  = 45;
 constexpr int YAW_INTERVAL_MICROS = 15000;
 
+// Remote tolerances
+constexpr float PITCH_TOLERANCE = 20.0f;
+constexpr float ROLL_TOLERANCE  = 20.0f;
+constexpr float YAW_TOLERANCE   = 5.0f; // Incementing
+constexpr float HOVER_THROTTLE  = 1500.0f;
+constexpr float THROTTLE_RANGE  = 400.0f;
+
+// Thresholds
+constexpr CRASH_ANGLE_DEG             = 60;
+constexpr LANDING_SHUTOFF_DISTANCE_CM = 5;
+
+// Throttles
+constexpr uint16_t HOVER_THROTTLE   = 1500;
+constexpr uint16_t LANDING_THROTTLE = 1050;
+
 // ========================================================================== //
 // PIN DEFINITIONS                                                            //
 // ========================================================================== //
@@ -1053,7 +1068,7 @@ class MotorMix {
      * @param pitch float. The pitch input.
      * @param yaw float. The yaw input.
      */
-    void update(float throttle, float roll, float pitch, float yaw) {
+    void update(float throttle, float pitch, float roll, float yaw) {
       float m[4];
 
       // Mix values for each motor
@@ -1301,7 +1316,7 @@ class FlightController {
         pitchPID(pitchPID), rollPID(rollPID), yawPID(yawPID),
         motorMix(motorMix), errorLED(errorPin), warningLED(warningPin),
         targetPitch(0), targetRoll(0), targetYaw(0), targetThrottle(0),
-        armingStart(0), strState("NONE")
+        armingStart(0), strState("IDLE")
     {}
 
     /**
@@ -1336,8 +1351,6 @@ class FlightController {
       errorLED.update();
       warningLED.update();
 
-      RemotePacket packet = radio.getRxPacket(); // TODO, remember that pitch etc are 0-31, split half, so 16 = 0 pitch target.
-
       // Safety check battery
       if (!battery.isSafe()) {
         state = FlightState::NO_BATTERY;
@@ -1345,32 +1358,16 @@ class FlightController {
 
       // Check if the drone has remote signal
       bool remoteSignal = radio.hasSignal();
-      if (!remoteSignal && warningLED.getState() == 0) // Don't overrule landing indicator
+      // Don't overrule landing indicator
+      if (!remoteSignal && warningLED.getState() == 0)
         warningLED.blink(250);
 
-      // Extract IMU values
-      float pitch = imu.getPitch();
-      float roll  = imu.getRoll();
-      float yaw   = imu.getYaw();
-
-      // Log battery
+      // Log output
       if (DEBUG_MAIN) {
         Serial.print(F("Battery: "));
         Serial.print(battery.getBatteryCharge() * 100);
         Serial.print(F("% | State: "));
         Serial.print(strState);
-        Serial.print(F(" | Pitch: "));
-        Serial.print(packet.pitch);
-        Serial.print(F("/"));
-        Serial.print(pitch);
-        Serial.print(F(" | Roll: "));
-        Serial.print(packet.roll);
-        Serial.print(F("/"));
-        Serial.print(roll);
-        Serial.print(F(" | Yaw: "));
-        Serial.print(packet.yaw);
-        Serial.print(F("/"));
-        Serial.print(yaw);
       }
 
       // State machine
@@ -1384,6 +1381,9 @@ class FlightController {
 
         case FlightState::FLYING:
           strState = "FLYING";
+          if (warningLED.getState() == 2)
+            warningLED.off();
+
           updateFlight();
           break;
 
@@ -1410,6 +1410,10 @@ class FlightController {
           errorLED.blink(250);
           motorMix.disarm();
           break;
+        
+        case FlightState::IDLE:
+          strState = "IDLE";
+          break;
       }
 
       if (DEBUG_MAIN)
@@ -1434,7 +1438,9 @@ class FlightController {
     }
 
   private:
-    enum class FlightState { ARMING, FLYING, AUTO_LAND, CRASH, NO_BATTERY };
+    enum class FlightState {
+      ARMING, FLYING, AUTO_LAND, CRASH, NO_BATTERY, IDLE
+    };
     FlightState state;
 
     Radio& radio;
@@ -1451,20 +1457,111 @@ class FlightController {
 
     float armingStart;
 
-    uint8_t targetPitch, targetRoll, targetYaw, targetThrottle;
+    float targetPitch, targetRoll, targetYaw, targetThrottle;
 
     /**
      * @brief .
      */
     void updateFlight() {
+      RemotePacket packet = radio.getRxPacket();
 
+      // Convert remote inputs
+      targetPitch    = mapStick(packet.pitch, PITCH_TOLERANCE);
+      targetRoll     = mapStick(packet.roll, ROLL_TOLERANCE);
+      targetYaw     += mapStick(packet.yaw, YAW_TOLERANCE);
+      targetThrottle = HOVER_THROTTLE + ((float)packet.throttle - 16.0f)
+                         / 16.0f * THROTTLE_RANGE;
+
+      // Read IMU
+      float pitch = imu.getPitch();
+      float roll  = imu.getRoll();
+      float yaw   = imu.getYaw();
+
+      // Log targets
+      if (DEBUG_MAIN) {
+        Serial.print(F(" | Pitch: "));
+        Serial.print(packet.pitch);
+        Serial.print(F("/"));
+        Serial.print(pitch);
+        Serial.print(F(" | Roll: "));
+        Serial.print(packet.roll);
+        Serial.print(F("/"));
+        Serial.print(roll);
+        Serial.print(F(" | Yaw: "));
+        Serial.print(packet.yaw);
+        Serial.print(F("/"));
+        Serial.print(yaw);
+      }
+
+      // Switch to autoland if needed
+      if (packet.autoland) {
+        state = FlightState::AUTO_LAND;
+        return;
+      }
+
+      // Detech crash
+      if (abs(pitch) > CRASH_ANGLE_DEG || abs(roll) > CRASH_ANGLE_DEG) {
+        state = FlightState::CRASH;
+        return;
+      }
+
+      // Update PIDs (when ready)
+      float pitchCorr = 0;
+      float rollCorr  = 0;
+      float yawCorr   = 0;
+
+      if (pitchPID.ready())
+        pitchCorr = pitchPID.update(targetPitch, pitch);
+      
+      if (rollPID.ready())
+        rollCorr = rollPID.update(targetRoll, roll);
+
+      if (yawPID.ready())
+        yawCorr = yawPID.update(targetYaw, yaw);
+
+      // Update motors
+      motorMix.update(targetThrottle, pitchCorr, rollCOrr, yawCorr);
     }
 
     /**
      * @brief .
      */
     void performAutoLand() {
+      // Read IMU
+      float pitch = imu.getPitch();
+      float roll  = imu.getRoll();
+      float yaw   = imu.getYaw();
 
+      // Update PIDs (when ready)
+      float pitchCorr = 0;
+      float rollCorr  = 0;
+      float yawCorr   = 0;
+
+      if (pitchPID.ready())
+        pitchCorr = pitchPID.update(0, pitch);
+      
+      if (rollPID.ready())
+        rollCorr = rollPID.update(0, roll);
+
+      if (yawPID.ready())
+        yawCorr = yawPID.update(targetYaw, yaw);
+
+      // Shut off if close to ground
+      float distance = uSensor.getDistance();
+      if (distance < LANDING_SHUTOFF_DISTANCE_CM) {
+        motorMix.disarm();
+        state = FlightState::IDLE;
+        return;
+      }
+
+      motorMix.update(LANDING_THROTTLE, pitchCorr, rollCorr, yawCorr);
+    }
+
+    /**
+     * @brief .
+     */
+    float mapStick(uint8_t value, float range) {
+      return ((float)value - 16.0f) / 16.0f * range;
     }
 };
 
@@ -1540,63 +1637,7 @@ void setup() {
  */
 void loop() {
   flightController.update();
-
-  /*
-  // Update sensors
-  //IMU.update();
-  //uSensor.update();
-  radio.update();
-
-  RemotePacket packet = radio.getRxPacket();
-  */
-  
-  //motorBL.setPulseWidth(1600);
-  //motorBL.update();
-  /*
-  // Compute target angles, TODO: Replace with remote values
-  float targetPitch = 0.0f;
-  float targetRoll  = 0.0f;
-  float targetYaw   = 0.0f; // Use +add so heading doesn't reset when stick does
-
-  // Grab spacial orientation
-  float measuredPitch = IMU.getPitch();
-  float measuredRoll  = IMU.getRoll();
-  float measuredYaw   = IMU.getYaw();
-
-  // Compute corrections
-  float pitchCorrection = pitchPID.update(targetPitch, measuredPitch);
-  float rollCorrection  = rollPID.update(targetRoll, measuredRoll);
-  float yawCorrection   = yawPID.update(targetYaw, measuredYaw);
-
-  // Base throttle to stay hovering
-  float baseThrottle = 1500.0f; // TODO Tune to exact hover
-
-  // Update motor mix
-  motorMix.update(baseThrottle, rollCorrection, pitchCorrection, yawCorrection);
-
-  // Debug loggin
-  if (VERBOSE) {
-    Serial.print(F("Pitch: "));
-    Serial.print(measuredPitch);
-    Serial.print(F(" | Roll: "));
-    Serial.print(measuredRoll);
-    Serial.print(F(" | Yaw: "));
-    Serial.println(measuredYaw);
-  }
-  */
 }
-
-/*
-IMU: 
- - Mount this shit as close to center of mass.
- - It has to have horizontal reading of pitch=0 and roll=0 to ensure NO bias.
-
-Prop mounting should be like the following:
- - Front-left  = CCW
- - Front-right = CW
- - Back-right  = CCW
- - Back-left   = CW
-*/
 
 /*
 Missing features:
