@@ -33,8 +33,8 @@
 // ========================================================================== //
 
 // Debug logging, ensure only one toggled at once to avoid console clutter.
-constexpr bool DEBUG_MAIN       = true; // Main information out
-constexpr bool DEBUG_IMU        = false;
+constexpr bool DEBUG_MAIN       = false; // Main information out
+constexpr bool DEBUG_IMU        = true;
 constexpr bool DEBUG_RADIO      = false;
 constexpr bool DEBUG_MOTOR      = false;
 constexpr bool DEBUG_USENSOR    = false;
@@ -87,9 +87,9 @@ constexpr uint8_t ERROR_LED_PIN   = 8;
 constexpr uint8_t WARNING_LED_PIN = 9;
 
 // Battery cell pins
-constexpr uint8_t BATTERY_CELL_1 = 10;
-constexpr uint8_t BATTERY_CELL_2 = 11;
-constexpr uint8_t BATTERY_CELL_3 = 12;
+constexpr uint8_t BATTERY_CELL_1 = A2;
+constexpr uint8_t BATTERY_CELL_2 = A3;
+constexpr uint8_t BATTERY_CELL_3 = A4;
 
 // ========================================================================== //
 // ENUMS / STRUCTS                                                            //
@@ -1105,14 +1105,14 @@ class BatteryManagement {
     void update() {
       if (timer.ready()) {
         // Read cells
-        int rawC1 = analogRead(cell1);
-        int rawC2 = analogRead(cell2);
-        int rawC3 = analogRead(cell3);
+        float rawC1 = analogRead(cell1);
+        float rawC2 = analogRead(cell2);
+        float rawC3 = analogRead(cell3);
 
         // Convert to voltage at pin
-        float V_C1 = rawC1 * (5 / 1023.0f);
-        float V_C2 = rawC2 * (5 / 1023.0f);
-        float V_C3 = rawC3 * (5 / 1023.0f);
+        float V_C1 = rawC1 * (5 / 1023.0f) * 2.0f;
+        float V_C2 = rawC2 * (5 / 1023.0f) * 2.8f;
+        float V_C3 = rawC3 * (5 / 1023.0f) * 3.7f;
         
         // Calculate cell voltages
         charge1 = V_C1;
@@ -1121,13 +1121,21 @@ class BatteryManagement {
 
         // Debug logging
         if (DEBUG_BATTERY) {
-          Serial.print(F("Cell 1: "));
+          Serial.print(F("C1: "));
           Serial.print(charge1);
-          Serial.print(F("V | Cell 2: "));
+          Serial.print(F("V ("));
+          Serial.print(convertV2Pct(charge1) * 100);
+          Serial.print(F("%) | C2: "));
           Serial.print(charge2);
-          Serial.print(F("V | Cell 3: "));
+          Serial.print(F("V ("));
+          Serial.print(convertV2Pct(charge2) * 100);
+          Serial.print(F("%) | C3: "));
           Serial.print(charge3);
-          Serial.println(F("V"));
+          Serial.print(F("V ("));
+          Serial.print(convertV2Pct(charge3) * 100);
+          Serial.print(F("%) | Total: "));
+          Serial.print(getBatteryCharge() * 100);
+          Serial.println(F("%"));
         }
       }
     }
@@ -1404,7 +1412,8 @@ class FlightController {
           break;
       }
 
-      Serial.println(F(""));
+      if (DEBUG_MAIN)
+        Serial.println(F(""));
     }
 
     /**
