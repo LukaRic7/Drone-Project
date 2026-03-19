@@ -366,7 +366,7 @@ class Motor {
      * Gradually increases pulse width until reaching target pulse.
      */
     void update() {
-      if (!armed) return;
+      //if (!armed) return;
 
       // Make sure it's done arming
       if (millis() > armEndMillis) {
@@ -379,9 +379,12 @@ class Motor {
           Serial.print(pulseMicros);
           Serial.println(F(" us"));
         }
-
-        updateTimerOutput();
+      } else {
+        // During arming
+        pulseMicros = 1000;
       }
+
+      updateTimerOutput();
     }
 
   private:
@@ -1054,12 +1057,14 @@ class MotorMix {
         motors[i]->arm();
       }
 
+      /*
       uint32_t startArmMillis = millis();
       while (millis() - startArmMillis < 3000) { // 3 second arming
         for (int i=0; i<4; ++i) {
           motors[i]->update();
         }
       }
+      */
     }
 
     /**
@@ -1087,8 +1092,23 @@ class MotorMix {
       }
 
       // Call update on each motor
+      updateMotors();
+    }
+
+    /**
+     * @brief DEBUGGING
+     */
+    void updateMotors() {
       for (int i=0; i<4; ++i)
         motors[i]->update();
+    }
+
+    /**
+     * @brief DEBUGGING
+     */
+    void setMotorsPWM(uint16_t us) {
+      for (int i=0; i<4; ++i)
+        motors[i]->setPulseWidth(us);
     }
 
   private:
@@ -1338,7 +1358,8 @@ class FlightController {
       yawPID.reset();
 
       state = FlightState::ARMING;
-      armingStart = millis();
+      //armingStart = millis();
+      armingStart = 0;
 
       if (DEBUG_MAIN)
         Serial.println("Started flight controller!");
@@ -1377,14 +1398,27 @@ class FlightController {
 
       // State machine
       switch (state) {
-        case FlightState::ARMING: // TODO: Never transitions to flight, update motors while arming
+        case FlightState::ARMING:
           strState = "ARMING";
-          if (warningLED.getState() == 2) break;
 
+          //if (warningLED.getState() == 2) break;
           warningLED.blink(250);
 
-          motorMix.arm();
-          state = FlightState::FLYING;
+          if (armingStart == 0) {
+            motorMix.arm();
+            armingStart = millis();
+            Serial.println("Arming!");
+          }
+
+          motorMix.setMotorsPWM(1000);
+          motorMix.updateMotors();
+
+          if (millis() - armingStart >= 5000) {
+            state = FlightState::FLYING;
+            Serial.println("Done!");
+            motorMix.setMotorsPWM(1600);
+          }
+
           break;
 
         case FlightState::FLYING:
@@ -1392,7 +1426,8 @@ class FlightController {
           if (warningLED.getState() == 2)
             warningLED.off();
 
-          updateFlight();
+          motorMix.updateMotors();
+          //updateFlight();
           break;
 
         case FlightState::AUTO_LAND:
@@ -1463,7 +1498,7 @@ class FlightController {
 
     String strState;
 
-    float armingStart;
+    uint32_t armingStart;
 
     float targetPitch, targetRoll, targetYaw, targetThrottle;
 
@@ -1483,6 +1518,8 @@ class FlightController {
       targetYaw     += mapStick(packet.yaw, YAW_TOLERANCE);
       targetThrottle = HOVER_THROTTLE + ((float)packet.throttle - 16.0f)
                          / 16.0f * THROTTLE_RANGE;
+        
+      targetThrottle = 1600;
 
       // Read IMU
       float pitch = imu.getPitch();
@@ -1503,6 +1540,8 @@ class FlightController {
         Serial.print(packet.yaw);
         Serial.print(F("/"));
         Serial.print(yaw);
+        Serial.print(F(" | Throttle: "));
+        Serial.print(targetThrottle);
       }
 
       // Switch to autoland if needed
@@ -1646,6 +1685,22 @@ void setup() {
   }
   
   flightController.begin();
+
+  /*
+  motorFR.begin();
+  motorFR.arm();
+
+  uint32_t start = millis();
+  Serial.println("Arming!");
+
+  while (millis() - start < 5000) {
+    motorFR.setPulseWidth(1000);
+    motorFR.update();
+  }
+  motorFR.setPulseWidth(1600);
+
+  Serial.println("Done");
+  */
 }
 
 /**
@@ -1653,6 +1708,8 @@ void setup() {
  */
 void loop() {
   flightController.update();
+
+  //motorFR.update();
 }
 
 /*
