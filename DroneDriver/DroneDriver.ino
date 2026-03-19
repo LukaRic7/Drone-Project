@@ -37,6 +37,7 @@ constexpr bool DEBUG_MAIN       = true; // Main information out
 constexpr bool DEBUG_IMU        = false;
 constexpr bool DEBUG_RADIO      = false;
 constexpr bool DEBUG_MOTOR      = false;
+constexpr bool DEBUG_MOTORMIX   = false;
 constexpr bool DEBUG_USENSOR    = false;
 constexpr bool DEBUG_BATTERY    = false;
 
@@ -1037,7 +1038,9 @@ class PID {
  */
 class MotorMix {
   public:
-    MotorMix(Motor* m1, Motor* m2, Motor* m3, Motor* m4) : motors{m1, m2, m3, m4} {}
+    MotorMix(Motor* m1, Motor* m2, Motor* m3, Motor* m4)
+      : motors{m1, m2, m3, m4}
+    {}
   
     /**
      * @brief Disarm all motors, powering them down.
@@ -1056,15 +1059,6 @@ class MotorMix {
         motors[i]->begin();
         motors[i]->arm();
       }
-
-      /*
-      uint32_t startArmMillis = millis();
-      while (millis() - startArmMillis < 3000) { // 3 second arming
-        for (int i=0; i<4; ++i) {
-          motors[i]->update();
-        }
-      }
-      */
     }
 
     /**
@@ -1084,6 +1078,18 @@ class MotorMix {
       m[1] = throttle + pitch - roll + yaw; // Front-right
       m[2] = throttle - pitch - roll - yaw; // Back-right
       m[3] = throttle - pitch + roll + yaw; // Back-left
+
+      // Debug pulse widths
+      if (DEBUG_MOTORMIX) {
+        Serial.print(F("FL: "));
+        Serial.print(m[0]);
+        Serial.print(F(" | FR: "));
+        Serial.print(m[1]);
+        Serial.print(F(" | BR: "));
+        Serial.print(m[2]);
+        Serial.print(F(" | BL: "));
+        Serial.println(m[3]);
+      }
 
       // Write to motor ESCs
       for (int i=0; i<4; ++i) {
@@ -1358,7 +1364,6 @@ class FlightController {
       yawPID.reset();
 
       state = FlightState::ARMING;
-      //armingStart = millis();
       armingStart = 0;
 
       if (DEBUG_MAIN)
@@ -1385,7 +1390,9 @@ class FlightController {
       // Check if the drone has remote signal
       bool remoteSignal = radio.hasSignal();
       // Don't overrule landing indicator
-      if (!remoteSignal && warningLED.getState() == 0 && state != FlightState::ARMING)
+      if (!remoteSignal
+          && warningLED.getState() == 0
+          && state != FlightState::ARMING)
         warningLED.blink(250);
 
       // Log output
@@ -1407,7 +1414,6 @@ class FlightController {
           if (armingStart == 0) {
             motorMix.arm();
             armingStart = millis();
-            Serial.println("Arming!");
           }
 
           motorMix.setMotorsPWM(1000);
@@ -1415,8 +1421,7 @@ class FlightController {
 
           if (millis() - armingStart >= 5000) {
             state = FlightState::FLYING;
-            Serial.println("Done!");
-            motorMix.setMotorsPWM(1600);
+            //motorMix.setMotorsPWM(1600); // Works when bypassing updateFlight()
           }
 
           break;
@@ -1426,8 +1431,8 @@ class FlightController {
           if (warningLED.getState() == 2)
             warningLED.off();
 
-          motorMix.updateMotors();
-          //updateFlight();
+          //motorMix.updateMotors(); // This works, bypassing updateFlight()
+          updateFlight();
           break;
 
         case FlightState::AUTO_LAND:
@@ -1517,9 +1522,7 @@ class FlightController {
       targetRoll     = mapStick(packet.roll, ROLL_TOLERANCE);
       targetYaw     += mapStick(packet.yaw, YAW_TOLERANCE);
       targetThrottle = HOVER_THROTTLE + ((float)packet.throttle - 16.0f)
-                         / 16.0f * THROTTLE_RANGE;
-        
-      targetThrottle = 1600;
+                         / 16.0f * THROTTLE_RANGE; // Should be >1000
 
       // Read IMU
       float pitch = imu.getPitch();
@@ -1685,22 +1688,6 @@ void setup() {
   }
   
   flightController.begin();
-
-  /*
-  motorFR.begin();
-  motorFR.arm();
-
-  uint32_t start = millis();
-  Serial.println("Arming!");
-
-  while (millis() - start < 5000) {
-    motorFR.setPulseWidth(1000);
-    motorFR.update();
-  }
-  motorFR.setPulseWidth(1600);
-
-  Serial.println("Done");
-  */
 }
 
 /**
