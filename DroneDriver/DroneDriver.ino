@@ -33,8 +33,8 @@
 // ========================================================================== //
 
 // Debug logging, ensure only one toggled at once to avoid console clutter.
-constexpr bool DEBUG_MAIN       = false; // Main information out
-constexpr bool DEBUG_IMU        = true;
+constexpr bool DEBUG_MAIN       = true; // Main information out
+constexpr bool DEBUG_IMU        = false;
 constexpr bool DEBUG_RADIO      = false;
 constexpr bool DEBUG_MOTOR      = false;
 constexpr bool DEBUG_USENSOR    = false;
@@ -1052,9 +1052,11 @@ class MotorMix {
       for (int i=0; i<4; ++i) {
         motors[i]->begin();
         motors[i]->arm();
+      }
 
-        uint32_t startArmMillis = millis();
-        while (millis() - startArmMillis < 3000) { // 3 second arming
+      uint32_t startArmMillis = millis();
+      while (millis() - startArmMillis < 3000) { // 3 second arming
+        for (int i=0; i<4; ++i) {
           motors[i]->update();
         }
       }
@@ -1168,7 +1170,7 @@ class BatteryManagement {
      * @return bool. False otherwise.
      */
     bool isSafe(float minPct=0.1f) {
-      return getBatteryCharge() > minPct;
+      return true; //getBatteryCharge() > minPct;
     }
 
     /**
@@ -1362,7 +1364,7 @@ class FlightController {
       // Check if the drone has remote signal
       bool remoteSignal = radio.hasSignal();
       // Don't overrule landing indicator
-      if (!remoteSignal && warningLED.getState() == 0)
+      if (!remoteSignal && warningLED.getState() == 0 && state != FlightState::ARMING)
         warningLED.blink(250);
 
       // Log output
@@ -1380,6 +1382,9 @@ class FlightController {
           if (warningLED.getState() == 2) break;
 
           warningLED.blink(250);
+
+          motorMix.arm();
+          state = FlightState::FLYING;
           break;
 
         case FlightState::FLYING:
