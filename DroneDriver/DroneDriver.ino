@@ -39,6 +39,7 @@ constexpr bool DEBUG_MOTOR      = false;
 constexpr bool DEBUG_MOTORMIX   = false;
 constexpr bool DEBUG_USENSOR    = false;
 constexpr bool DEBUG_BATTERY    = false;
+constexpr bool NO_REMOTE_TEST   = true;
 
 // Timings
 constexpr int INERTIAL_INTERVAL_MICROS = 1000;
@@ -47,7 +48,7 @@ constexpr int USENSOR_INTERVAL_MICROS  = 1000;
 // Pich PID tuning values
 constexpr float PITCH_P = 3.0f;
 constexpr float PITCH_I = 0.5f;
-constexpr float PITCH_D = 0.8f;
+constexpr float PITCH_D = 3.0f;
 constexpr int PITCH_OUTPUT_LIMIT    = 300;
 constexpr int PITCH_INTEGRAL_LIMIT  = 45;
 constexpr int PITCH_INTERVAL_MICROS = 15000;
@@ -55,7 +56,7 @@ constexpr int PITCH_INTERVAL_MICROS = 15000;
 // Roll PID tuning values
 constexpr float ROLL_P = 3.0f;
 constexpr float ROLL_I = 0.5f;
-constexpr float ROLL_D = 0.8f;
+constexpr float ROLL_D = 3.0f;
 constexpr int ROLL_OUTPUT_LIMIT    = 300;
 constexpr int ROLL_INTEGRAL_LIMIT  = 45;
 constexpr int ROLL_INTERVAL_MICROS = 15000;
@@ -73,13 +74,14 @@ constexpr float PITCH_TOLERANCE = 20.0f;
 constexpr float ROLL_TOLERANCE  = 20.0f;
 constexpr float YAW_TOLERANCE   = 5.0f; // Incementing
 constexpr float THROTTLE_RANGE  = 400.0f;
+constexpr int16_t THROTTLE_STEP = 5;
 
 // Thresholds
-constexpr float CRASH_ANGLE_DEG             = 60.0f;
+constexpr float CRASH_ANGLE_DEG             = 20.0f;
 constexpr float LANDING_SHUTOFF_DISTANCE_CM = 5.0f;
 
 // Throttles
-constexpr uint16_t HOVER_THROTTLE   = 1500;
+constexpr uint16_t HOVER_THROTTLE   = 1450;
 constexpr uint16_t LANDING_THROTTLE = 1050;
 
 // ========================================================================== //
@@ -370,8 +372,8 @@ class Motor {
 
       // Make sure it's done arming
       if (millis() > armEndMillis) {
-        if      (pulseMicros < targetPulse) pulseMicros++;
-        else if (pulseMicros > targetPulse) pulseMicros--;
+        if      (pulseMicros < targetPulse) pulseMicros += THROTTLE_STEP;
+        else if (pulseMicros > targetPulse) pulseMicros -= THROTTLE_STEP;
 
         // Debug logging
         if (DEBUG_MOTOR) {
@@ -1565,6 +1567,13 @@ class FlightController {
       targetYaw     += mapStick(packet.yaw, YAW_TOLERANCE);
       targetThrottle = HOVER_THROTTLE + ((float)packet.throttle - 16.0f)
                          / 16.0f * THROTTLE_RANGE; // Should be >1000
+        
+      if (NO_REMOTE_TEST) {
+        targetPitch = 0;
+        targetRoll  = 0;
+        targetYaw   = 0;
+        targetThrottle = HOVER_THROTTLE;
+      }
 
       // Read IMU
       float pitch = imu.getPitch();
