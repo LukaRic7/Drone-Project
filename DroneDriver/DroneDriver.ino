@@ -40,31 +40,31 @@ constexpr bool DEBUG_MOTOR      = false;
 constexpr bool DEBUG_MOTORMIX   = false;
 constexpr bool DEBUG_USENSOR    = false;
 constexpr bool DEBUG_BATTERY    = false;
-constexpr bool NO_REMOTE_TEST   = true;
+constexpr bool NO_REMOTE_TEST   = false;
 
 // Timings
 constexpr int INERTIAL_INTERVAL_MICROS = 1000;
 constexpr int USENSOR_INTERVAL_MICROS  = 1000;
 
 // Pich PID tuning values
-constexpr float PITCH_P = 3.0f;
-constexpr float PITCH_I = 0.5f;
-constexpr float PITCH_D = 3.0f;
+constexpr float PITCH_P = 0.4f;
+constexpr float PITCH_I = 0.05f;
+constexpr float PITCH_D = 0.2f;
 constexpr int PITCH_OUTPUT_LIMIT    = 300;
 constexpr int PITCH_INTEGRAL_LIMIT  = 45;
 constexpr int PITCH_INTERVAL_MICROS = 15000;
 
 // Roll PID tuning values
-constexpr float ROLL_P = 3.0f;
-constexpr float ROLL_I = 0.5f;
-constexpr float ROLL_D = 3.0f;
+constexpr float ROLL_P = 0.4f;
+constexpr float ROLL_I = 0.05f;
+constexpr float ROLL_D = 0.2f;
 constexpr int ROLL_OUTPUT_LIMIT    = 300;
 constexpr int ROLL_INTEGRAL_LIMIT  = 45;
 constexpr int ROLL_INTERVAL_MICROS = 15000;
 
 // Yaw PID tuning values
-constexpr float YAW_P = 1.2f;
-constexpr float YAW_I = 0.1f;
+constexpr float YAW_P = 0.0f;
+constexpr float YAW_I = 0.0f;
 constexpr float YAW_D = 0.0f;
 constexpr int YAW_OUTPUT_LIMIT    = 300;
 constexpr int YAW_INTEGRAL_LIMIT  = 45;
@@ -717,7 +717,8 @@ class Radio {
      * @brief Initialize the RadioHead driver.
      */
     void begin() {
-      if (!driver.init() && DEBUG_RADIO)
+      bool success = driver.init();
+      if (!success && DEBUG_RADIO)
         Serial.println("Failed to initialize radio driver!");
     }
 
@@ -736,27 +737,27 @@ class Radio {
         if (rxPacket.decode(buffer)) {
           signal = true;
           lastRxTime = millis();
-
-          // Debug logging
-          if (DEBUG_RADIO) {
-            Serial.print(F("Signal: "));
-            Serial.print(signal ? "YES" : "NO");
-            Serial.print(F(" | Pitch: "));
-            Serial.print(rxPacket.pitch);
-            Serial.print(F(" | Roll: "));
-            Serial.print(rxPacket.roll);
-            Serial.print(F(" | Yaw: "));
-            Serial.print(rxPacket.yaw);
-            Serial.print(F(" | Throttle: "));
-            Serial.print(rxPacket.throttle);
-            Serial.print(F(" | Autoland: "));
-            Serial.println(rxPacket.autoland);
-          } 
         }
       }
 
+      // Debug logging
+      if (DEBUG_RADIO) {
+        Serial.print(F("Signal: "));
+        Serial.print(signal ? "YES" : "NO");
+        Serial.print(F(" | Pitch: "));
+        Serial.print(rxPacket.pitch);
+        Serial.print(F(" | Roll: "));
+        Serial.print(rxPacket.roll);
+        Serial.print(F(" | Yaw: "));
+        Serial.print(rxPacket.yaw);
+        Serial.print(F(" | Throttle: "));
+        Serial.print(rxPacket.throttle);
+        Serial.print(F(" | Autoland: "));
+        Serial.println(rxPacket.autoland);
+      } 
+
       // Check if the radio lost signal to the transmitter
-      if (millis() - lastRxTime > 500) {
+      if (millis() - lastRxTime > 2000) {
         signal = false;
       }
     }
@@ -1076,14 +1077,20 @@ class MotorMix {
       float m[4];
 
       // Mix values for each motor
-      m[0] = throttle + pitch + roll - yaw; // Front-left
-      m[1] = throttle + pitch - roll + yaw; // Front-right
-      m[2] = throttle - pitch - roll - yaw; // Back-right
-      m[3] = throttle - pitch + roll + yaw; // Back-left
+      m[0] = throttle + pitch + roll; // Front-left
+      m[1] = throttle + pitch - roll; // Front-right
+      m[2] = throttle - pitch - roll; // Back-right
+      m[3] = throttle - pitch + roll; // Back-left
 
       // Debug pulse widths
       if (DEBUG_MOTORMIX) {
-        Serial.print(F("FL: "));
+        Serial.print(F("Pitch: "));
+        Serial.print(pitch);
+        Serial.print(F(" | Roll: "));
+        Serial.print(roll);
+        Serial.print(F(" | Yaw: "));
+        Serial.print(yaw);
+        Serial.print(F(" | FL: "));
         Serial.print(m[0]);
         Serial.print(F(" | FR: "));
         Serial.print(m[1]);
@@ -1095,7 +1102,7 @@ class MotorMix {
 
       // Write to motor ESCs
       for (int i=0; i<4; ++i) {
-        m[i] = constrain(m[i], 1000, 2000); // µs width max size
+        m[i] = constrain(m[i], 1100, 2000); // µs width max size
         motors[i]->setPulseWidth(m[i]);
       }
 
@@ -1525,7 +1532,7 @@ class FlightController {
       targetYaw     += mapStick(packet.yaw, YAW_TOLERANCE);
       targetThrottle = HOVER_THROTTLE + ((float)packet.throttle - 16.0f)
                          / 16.0f * THROTTLE_RANGE; // Should be >1000
-        
+
       if (NO_REMOTE_TEST) {
         targetPitch = 0;
         targetRoll  = 0;
@@ -1581,7 +1588,7 @@ class FlightController {
       }
 
       // Update motors
-      motorMix.update(targetThrottle, pitchCorr, rollCorr, yawCorr);
+      motorMix.update(targetThrottle, -pitchCorr, rollCorr, yawCorr);
     }
 
     /**
@@ -1692,7 +1699,7 @@ FlightController flightController(
 void setup() {
   // Debug initialization
   if (DEBUG_MAIN || DEBUG_IMU || DEBUG_RADIO || DEBUG_MOTOR || DEBUG_USENSOR
-      || DEBUG_BATTERY) {
+      || DEBUG_BATTERY || DEBUG_MOTORMIX) {
         Serial.begin(9600);
   }
   
