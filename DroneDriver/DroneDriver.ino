@@ -1,7 +1,7 @@
-/** LAST-452-T648
+/**
  * @file    DroneDriver.ino
  * @author  Luka Jacobsen
- * @brief   Quadcopter drone control system.
+ * @brief   Quadcopter drone control system. Designed for an Arduino Mega.
  * @date    2026-02-26
  * * @details This file handles the controlling of a drone using PID. It has
  * the ability to float (autostabilize) midair, aswell as being controlable
@@ -9,7 +9,6 @@
  * ground, aswell as autolanding it's able to sense when it's flipped to
  * dangerous angles, which from here it will try to perform an emergency
  * landing and reduce motor speed as to reduce possible damage from crash.
- * * HARDWARECONNECTIONS:
  */
 
 // ========================================================================== //
@@ -547,13 +546,15 @@ class Motor {
  */
 class InertialUnit {
   public:
-    InertialUnit(uint32_t intervalMicros, uint8_t address=0x68)
-      : mpu_address(address), timer(intervalMicros), roll(0), pitch(0), yaw(0),
+    InertialUnit(uint32_t intervalMicros, uint8_t mpu_addr=0x68,
+                 uint8_t mag_addr=0x1E)
+      : mpu_address(mpu_addr), mag_address(mag_addr), timer(intervalMicros),
+        roll(0), pitch(0), yaw(0), mx(0), my(0), mz(0),
         dt(intervalMicros * 1e-6f)
     {}
 
     /**
-     * @brief Initialize the wire, and wake up the MPU-6050.
+     * @brief Initialize the wire, and wake up the MPU-6050 and the GY-271.
      * 
      * When waking up the MPU, the wire starts a transmission to the address.
      * It then writes a 0 value first to the power management register address
@@ -568,6 +569,19 @@ class InertialUnit {
       Wire.write(0x6B); // Power management address
       Wire.write(0x00); // Write 0 to sleep
       Wire.endTransmission(true); // Release the bus
+
+      // Wake GY-271
+      Wire.beginTransmission(MAG_ADDR);
+      Wire.write(0x00); Wire.write(0x70); // Config A
+      Wire.endTransmission();
+      
+      Wire.beginTransmission(MAG_ADDR);
+      Wire.write(0x01); Wire.write(0x20); // Gain
+      Wire.endTransmission();
+      
+      Wire.beginTransmission(MAG_ADDR);
+      Wire.write(0x02); Wire.write(0x00); // Continuous mode
+      Wire.endTransmission();
     }
 
     /**
@@ -606,9 +620,10 @@ class InertialUnit {
       if (!timer.ready()) return;
       
       // Define constant units
-      constexpr float half16bits  = 16384.0f;
-      constexpr float degPerSec   = 131.07f;
-      constexpr float alphaFilter = 0.98f;
+      constexpr float half16bits   = 16384.0f;
+      constexpr float deg_per_sec  = 131.07f;
+      constexpr float alpha_filter = 0.98f;
+      constexpr float alpha_yaw    = 0.98f;
 
       // Burst read 14 bytes
       Wire.beginTransmission(mpu_address);
@@ -625,15 +640,41 @@ class InertialUnit {
       int16_t gy = read16();
       int16_t gz = read16();
 
+      // Read magnometer
+      Wire.beginTransmission(MAG_ADDR);
+      Wire.write(0x03);
+      Wire.endTransmission();
+    
+      Wire.requestFrom(MAG_ADDR, (uint8_t)6);
+    
+      if (Wire.available() == 6) {
+        mx = (float)read16();
+        mz = (float)read16();
+        my = (float)read16();
+      }
+
       // Convert gyroscopics
-      float gxf = gx / degPerSec;
-      float gyf = gy / degPerSec;
-      float gzf = gz / degPerSec;
+      float gxf = gx / deg_per_sec;
+      float gyf = gy / deg_per_sec;
+      float gzf = gz / deg_per_sec;
 
       // Integrate gyroscopics
       roll  += gxf * dt;
       pitch += gyf * dt;
       yaw   += gzf * dt;
+
+      float roll_rad = roll * DEG_TO_RAD;
+      float pitch_rad = pitch * DEG_TO_RAD;
+
+      float mx_comp = mx * cos(pitch_rad) + mz * sin(pitchRad);
+      float my_comp = mx * sin(rollRad) * sin(pitchRad) + my * cos(rollRad)
+                      - mz * sin(rollRad) * cos(pitchRad);
+        
+      float yaw_mag = atan2(-my_comp, mx_comp) * RAD_TO_DEG;
+
+      if (yaw_mag < 0) yaw_mag += 360;
+
+      yaw = alpha_yaw * yaw + (1 - alpha_yaw) * yaw_mag;
 
       // Acceleration angles
       float axf = ax / half16bits;
@@ -641,12 +682,12 @@ class InertialUnit {
       float azf = az / half16bits;
 
       // Calculate accelleration
-      float rollAcc  = atan2(ayf, azf) * RAD_TO_DEG;
-      float pitchAcc = atan2(-axf, sqrt(ayf*ayf + azf*azf)) * RAD_TO_DEG;
+      float roll_acc  = atan2(ayf, azf) * RAD_TO_DEG;
+      float pitch_acc = atan2(-axf, sqrt(ayf*ayf + azf*azf)) * RAD_TO_DEG;
 
       // Calculate the pitch and roll angle
-      roll  = alphaFilter * roll  + (1 - alphaFilter) * rollAcc;
-      pitch = alphaFilter * pitch + (1 - alphaFilter) * pitchAcc;
+      roll  = alpha_filter * roll  + (1 - alpha_filter) * roll_acc;
+      pitch = alpha_filter * pitch + (1 - alpha_filter) * pitch_acc;
 
       // Debug logging
       if (DEBUG_IMU) {
@@ -684,10 +725,11 @@ class InertialUnit {
     float getYaw() const { return yaw; }
 
   private:
-    uint8_t mpu_address;
+    uint8_t mpu_address, mag_address;
     IntervalMicros timer;
 
     float roll, pitch, yaw;
+    float mx, my, mz;
 
     float dt;
 
@@ -981,33 +1023,33 @@ class PID {
      * @return float. Correction value.
     */
     float update(float target, float measurement) {
-        float error = target - measurement;
+      float error = target - measurement;
 
-        // Integral with clamp
-        integral += error * dt;
-        if (integral > integralLimit) integral = integralLimit;
-        else if (integral < -integralLimit) integral = -integralLimit;
+      // Integral with clamp
+      integral += error * dt;
+      if (integral > integralLimit) integral = integralLimit;
+      else if (integral < -integralLimit) integral = -integralLimit;
 
-        // Derivative (cheap)
-        float derivative = (error - lastError) * invDt;
-        lastError = error;
+      // Derivative (cheap)
+      float derivative = (error - lastError) * invDt;
+      lastError = error;
 
-        // Compute output
-        float output = kp * error + ki * integral + kd * derivative;
+      // Compute output
+      float output = kp * error + ki * integral + kd * derivative;
 
-        // Clamp output
-        if (output > outputLimit) output = outputLimit;
-        else if (output < -outputLimit) output = -outputLimit;
+      // Clamp output
+      if (output > outputLimit) output = outputLimit;
+      else if (output < -outputLimit) output = -outputLimit;
 
-        return output;
+      return output;
     }
 
     /**
      * @brief Resets integral and last recorded error.
      */
     void reset() {
-        integral = 0;
-        lastError = 0;
+      integral = 0;
+      lastError = 0;
     }
 
     // Gains can be changed live
@@ -1711,8 +1753,6 @@ void setup() {
  */
 void loop() {
   flightController.update();
-
-  //motorFR.update();
 }
 
 /*
